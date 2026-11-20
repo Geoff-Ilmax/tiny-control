@@ -82,7 +82,17 @@ pub struct Reply {
     pub receiver: u8,
     pub cmd: u16,
     pub payload: Vec<u8>,
+    /// Firmware error code from an error reply (flags `0x89`), e.g. `0xFFFD`
+    /// unsupported, `0x000A`/`0x000C` parameter error.
+    pub error: Option<u16>,
 }
+
+/// Flag bit set on frames that carry a nested payload segment (`0x25`
+/// request, `0x29` reply). A plain ACK (`0x09`) leaves stale bytes after the
+/// header, so nothing past it may be parsed.
+const FLAG_HAS_PAYLOAD: u8 = 0x20;
+/// Flag bit set on error replies (`0x89`): bytes 14-15 carry the error code.
+const FLAG_ERROR: u8 = 0x80;
 
 /// Parse a 60-byte buffer as a V3 frame, validating magic and both CRCs.
 /// Returns None if it is not a well-formed frame (e.g. a zeroed no-reply).
@@ -108,8 +118,15 @@ pub fn parse(raw: &[u8]) -> Option<Reply> {
         receiver: raw[9],
         cmd: u16::from_le_bytes([raw[10], raw[11]]),
         payload: Vec::new(),
+        error: None,
     };
-    if raw.len() >= 16 {
+    if raw[1] & FLAG_ERROR != 0 {
+        if raw.len() >= 16 {
+            reply.error = Some(u16::from_le_bytes([raw[14], raw[15]]));
+        }
+        return Some(reply);
+    }
+    if raw.len() >= 16 && raw[1] & FLAG_HAS_PAYLOAD != 0 {
         let len2 = u16::from_le_bytes([raw[12], raw[13]]) as usize;
         if len2 > 0 {
             // A payload is claimed: it must fit (<=44, offset 16) and its CRC
@@ -164,6 +181,30 @@ mod tests {
         assert_eq!(r.receiver, 0x04);
         assert_eq!(r.cmd, 0x6484);
         assert_eq!(r.payload, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn ack_and_error_replies_carry_no_payload() {
+        // A plain ACK (0x09) over stale mailbox bytes: header only.
+        let mut f = build(FLAG_SET, 7, 0x04, 0x3944, &[1, 2, 3, 4]);
+        f[1] = 0x09;
+        fix_header_crc(&mut f);
+        let r = parse(&f).unwrap();
+        assert!(r.payload.is_empty() && r.error.is_none());
+        // An error reply (0x89) with code 0x000C at bytes 14-15.
+        let mut f = build(FLAG_GET, 8, 0x04, 0x3a44, &[]);
+        f[1] = 0x89;
+        f[12..16].copy_from_slice(&[0x00, 0x02, 0x0c, 0x00]);
+        fix_header_crc(&mut f);
+        let r = parse(&f).unwrap();
+        assert_eq!(r.error, Some(0x000c));
+    }
+
+    fn fix_header_crc(f: &mut [u8; FRAME_LEN]) {
+        let mut h = [0u8; 12];
+        h[0..6].copy_from_slice(&f[0..6]);
+        h[8..12].copy_from_slice(&f[8..12]);
+        f[6..8].copy_from_slice(&crc16_usb(&h).to_le_bytes());
     }
 
     #[test]

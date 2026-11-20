@@ -4,8 +4,10 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
-    /// No matching camera node was found under /dev/v4l/by-id/.
+    /// No matching camera was found (or the selector matched none).
     DeviceNotFound(String),
+    /// The camera model does not support (or did not confirm) a feature.
+    Unsupported { feature: String, model: String },
     /// A filesystem or ioctl syscall failed.
     Io(std::io::Error),
     /// The vendor command sent but no matching reply arrived in the mailbox.
@@ -26,7 +28,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::DeviceNotFound(s) => write!(f, "no OBSBOT Tiny 3 camera found: {s}"),
+            Error::DeviceNotFound(s) => write!(f, "camera not found: {s}"),
+            Error::Unsupported { feature, model } => {
+                write!(f, "{feature} is not supported on the {model}")
+            }
             Error::Io(e) => write!(f, "{e}"),
             Error::NoReply(what) => write!(f, "no reply from camera for {what}"),
             Error::OutOfRange {

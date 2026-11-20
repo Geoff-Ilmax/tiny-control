@@ -9,10 +9,11 @@ use crate::controls;
 use crate::error::{Error, Result};
 use crate::frame::{self, FLAG_GET, FLAG_SET};
 use crate::ioctl::VideoFd;
+use crate::model::{Family, Feature, Model, Support};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
-// UVC extension unit (same as Tiny 2: bUnitID 2, GUID 9A1E7291-...).
+// UVC extension unit, shared by Tiny 2 and Tiny 3 (bUnitID 2, GUID 9A1E7291-...).
 const XU_UNIT: u8 = 0x02;
 const SEL_CMD: u8 = 0x02; // framed V3 command channel + reply mailbox
 const SEL_STATUS: u8 = 0x06; // 60-byte status block + raw-TLV write target
@@ -30,6 +31,41 @@ const CMD_GIMBAL_MOVE: u16 = 0x6444; // move-to-angle, 3x f32 motor degrees
 const CMD_TRACK_SPEED: u16 = 0x0CC4; // payload [0]=standard [2]=sport
 const CMD_GET_SN: u16 = 0x18C8;
 const CMD_GET_UUID: u16 = 0x1808;
+// On-camera presets and boot pose (AI receiver). Decoded by lxman/obsbot-mcp
+// on the Tiny 2; see PROTOCOL.md "On-camera presets".
+const CMD_PRESET_ADD: u16 = 0x3944;
+const CMD_PRESET_DELETE: u16 = 0x3984;
+const CMD_PRESET_TRIG: u16 = 0x39C4;
+const CMD_PRESET_UPDATE: u16 = 0x3E04;
+const CMD_BOOT_POS_SET: u16 = 0x3844;
+const CMD_BOOT_POS_GET: u16 = 0x3884;
+const CMD_BOOT_POS_RST: u16 = 0x38C4;
+const CMD_PRESET_ACTIONS_GET: u16 = 0x3DC4;
+const CMD_BOOT_ACTIONS_GET: u16 = 0x3E84;
+const CMD_BOOT_ACTIONS_SET: u16 = 0x3E44;
+// Flat (non-framed) XU selectors that expose the preset store.
+const SEL_PRESET_LIST: u8 = 0x0C;
+const SEL_PRESET_ENTRY: u8 = 0x0D;
+
+/// Writes to the camera's preset store and power-on record are DISABLED.
+/// A Tiny 2 began dropping contrast, saturation and sharpness to zero in
+/// Desk mode (on Windows too) while these writes were being tested, so they
+/// stay off until the cause is understood. Reading and recall still work.
+const PRESET_WRITES_DISABLED: bool = true;
+
+fn preset_writes_allowed() -> Result<()> {
+    if PRESET_WRITES_DISABLED {
+        return Err(Error::Config(
+            "writing on-camera presets and the power-on position is disabled while a camera \
+             side effect is investigated; use OBSBOT Center to save presets for now"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Number of on-camera preset slots (shown to users as 1..=3).
+pub const PRESET_SLOTS: u8 = 3;
 
 // Raw-TLV tags on selector 6.
 const TLV_HDR: u8 = 0x01;
@@ -44,7 +80,9 @@ const ST_HDR: usize = 0x06;
 const ST_AUTO_SLEEP: usize = 0x0a;
 const ST_AI_CATEGORY: usize = 0x18;
 const ST_AI_SUBMODE: usize = 0x1c;
-const ST_TRACK_SPEED: usize = 0x21;
+const ST_FACE_AE: usize = 0x07; // 0 global / 1 face (verified Tiny 2 + Tiny 3)
+const ST_FOV: usize = 0x11; // 0 wide / 1 medium / 2 narrow (verified Tiny 2 + Tiny 3)
+                            // Tracking speed's offset differs per model: see Model::track_speed_offset.
 
 /// AI tracking mode. The wire encoding is `[0x16, 0x02, category, submode]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +144,9 @@ impl TrackMode {
             (2, 3) => TrackMode::Headless,
             (2, 4) => TrackMode::LowerBody,
             (1, _) => TrackMode::Group,
-            (3, _) => TrackMode::Hand,
+            // The Tiny 2 reports hand tracking as category 6 in its status
+            // block even though the SET uses 3 (observed by Tiny4Linux).
+            (3, _) | (6, _) => TrackMode::Hand,
             (4, _) => TrackMode::Whiteboard,
             (5, _) => TrackMode::Desk,
             _ => TrackMode::Normal,
@@ -137,19 +177,326 @@ pub struct Status {
     pub auto_sleep_seconds: u16,
     pub hdr: bool,
     pub tracking: TrackMode,
-    pub tracking_sport: bool,
+    /// Some(true) = sport. None when this model does not report it.
+    pub tracking_sport: Option<bool>,
+    /// Field-of-view level: 0 wide, 1 medium, 2 narrow.
+    pub fov: u8,
+    /// Face-priority auto-exposure.
+    pub face_ae: bool,
     pub auto_wb: bool,
     pub wb_temp: i32,
     pub pan_deg: f64,
     pub tilt_deg: f64,
     pub zoom: i32,
     pub auto_exposure: bool,
+    /// The raw 60-byte vendor status block, for `status --raw` and `probe`.
+    pub raw: [u8; 60],
 }
 
-/// An open, awake camera.
+/// A gimbal pose as the camera stores it in a preset or its boot pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub pan_deg: f64,
+    pub tilt_deg: f64,
+    /// Zoom ratio: 1.0 = no zoom (UVC zoom 0), 2.0 = UVC zoom 100.
+    pub zoom_ratio: f64,
+}
+
+impl Pose {
+    /// Same place, within the camera's ~1° storage quantization.
+    pub fn close_to(&self, o: &Pose) -> bool {
+        (self.pan_deg - o.pan_deg).abs() <= 1.5 && (self.tilt_deg - o.tilt_deg).abs() <= 1.5
+    }
+}
+
+/// One on-camera preset slot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetSlot {
+    /// 1..=3
+    pub slot: u8,
+    /// Whether the camera holds a preset in this slot.
+    pub occupied: bool,
+    /// The stored position; None when empty or when the model does not report
+    /// it (the Tiny 3 does not).
+    pub pose: Option<Pose>,
+    pub name: Option<String>,
+}
+
+/// A preset's "Additional settings" from OBSBOT Center, as the camera stores
+/// them (40-byte actions record, `AI_GET_PRESETS_ACTIONS` 0x3DC4). The camera
+/// applies the power-on copy itself at boot, but NOT a preset's on recall —
+/// tinyctl applies those. `None` = "not set" in the record (0xff / 0x80).
+/// Decoded on a Tiny 2 against known OBSBOT Center settings; see PROTOCOL.md.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetActions {
+    /// Some(Off) = tracking enabled with no mode selected (0xff).
+    pub tracking: Option<TrackMode>,
+    /// The raw mode byte, for modes not mapped yet.
+    pub tracking_raw: u8,
+    /// Center's "Motion" speed = sport.
+    pub sport: Option<bool>,
+    pub auto_focus: Option<bool>,
+    /// Focus target: true = face, false = global.
+    pub face_focus: Option<bool>,
+    pub auto_exposure: Option<bool>,
+    /// Exposure target: true = face, false = global.
+    pub face_ae: Option<bool>,
+    /// Exposure compensation in thirds of a stop (index 9 = 0).
+    pub exposure_comp_thirds: Option<i8>,
+    pub auto_wb: Option<bool>,
+    pub wb_temp: Option<i32>,
+    pub blur: Option<bool>,
+    pub blur_level: Option<u8>,
+    pub contrast: Option<u8>,
+    pub saturation: Option<u8>,
+    pub sharpness: Option<u8>,
+    pub hue: Option<u8>,
+    // --- Tiny 3 generation only (None/false on the Tiny 2) ---
+    /// Tracking speed when human tracking is on: slow / medium / fast.
+    pub speed_name: Option<&'static str>,
+    /// Auto Zoom framing: 0 off, 1 full body (others not mapped yet).
+    pub auto_zoom: Option<u8>,
+    /// AI mode "Voice" (no known tinyctl command).
+    pub voice: bool,
+    /// Manual focus position (auto focus off).
+    pub manual_focus: Option<u16>,
+    /// Manual ISO (auto exposure off).
+    pub iso: Option<u32>,
+    /// Auto-exposure ISO limits.
+    pub iso_range: Option<(u32, u32)>,
+    /// AWB shift (B-A, G-M).
+    pub wb_shift: Option<(f32, f32)>,
+    pub raw: [u8; 40],
+}
+
+/// Tracking-mode byte of an actions record. Observed in OBSBOT Center
+/// presets: ff none, 00 normal, 01 upper, 05 desk, 06 whiteboard, 09 group.
+/// 02-04 (close-up, headless, lower) follow the framing order and are
+/// inferred, not observed.
+fn actions_track_mode(b: u8) -> Option<TrackMode> {
+    Some(match b {
+        0xff => TrackMode::Off,
+        0 => TrackMode::Normal,
+        1 => TrackMode::UpperBody,
+        2 => TrackMode::CloseUp,
+        3 => TrackMode::Headless,
+        4 => TrackMode::LowerBody,
+        5 => TrackMode::Desk,
+        6 => TrackMode::Whiteboard,
+        9 => TrackMode::Group,
+        _ => return None,
+    })
+}
+
+impl PresetActions {
+    pub fn decode(r: &[u8]) -> Option<PresetActions> {
+        let raw: [u8; 40] = r.get(..40)?.try_into().ok()?;
+        let flag = |b: u8| match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        let pct = |b: u8| (b <= 100).then_some(b);
+        let temp = u16::from_le_bytes([raw[14], raw[15]]);
+        Some(PresetActions {
+            tracking: actions_track_mode(raw[0]),
+            tracking_raw: raw[0],
+            sport: flag(raw[1]),
+            auto_focus: flag(raw[2]),
+            face_focus: flag(raw[3]),
+            auto_exposure: flag(raw[6]),
+            face_ae: flag(raw[7]),
+            exposure_comp_thirds: (raw[8] != 0x80 && raw[8] <= 18).then(|| raw[8] as i8 - 9),
+            auto_wb: match raw[13] {
+                0 => Some(true),
+                0xff => None,
+                _ => Some(false),
+            },
+            wb_temp: (raw[13] != 0xff
+                && (controls::WB_TEMP_MIN..=controls::WB_TEMP_MAX).contains(&(temp as i32)))
+            .then_some(temp as i32),
+            blur: flag(raw[17]),
+            blur_level: (raw[19] != 0xff).then_some(raw[19]),
+            contrast: pct(raw[20]),
+            saturation: pct(raw[21]),
+            sharpness: pct(raw[22]),
+            hue: pct(raw[23]),
+            speed_name: None,
+            auto_zoom: None,
+            voice: false,
+            manual_focus: None,
+            iso: None,
+            iso_range: None,
+            wb_shift: None,
+            raw,
+        })
+    }
+
+    /// Decode the Tiny 3 generation's layout (see PROTOCOL.md). Human
+    /// tracking and AI mode exclude each other in OBSBOT Center.
+    pub fn decode_tiny3(r: &[u8]) -> Option<PresetActions> {
+        let raw: [u8; 40] = r.get(..40)?.try_into().ok()?;
+        let flag = |b: u8| match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        let pct = |b: u8| (b <= 100).then_some(b);
+        let human = matches!(raw[0], 0x0b | 0x0c);
+        let tracking = match (raw[0], raw[25]) {
+            (0x0b, _) => Some(TrackMode::Normal),
+            (0x0c, _) => Some(TrackMode::Group),
+            (0xff, 0x00) => Some(TrackMode::Desk),
+            (0xff, 0x01) => Some(TrackMode::Whiteboard),
+            (0xff, 0x02) => None, // voice
+            (0xff, 0xff) => Some(TrackMode::Off),
+            _ => None,
+        };
+        let iso_step = |i: u8| (1..=8).contains(&i).then(|| 100u32 << (i - 1));
+        let temp = u16::from_le_bytes([raw[14], raw[15]]);
+        let image = raw[16] == 1;
+        Some(PresetActions {
+            tracking,
+            tracking_raw: raw[0],
+            sport: None,
+            auto_focus: flag(raw[2]),
+            face_focus: flag(raw[3]),
+            auto_exposure: flag(raw[6]),
+            face_ae: flag(raw[7]),
+            exposure_comp_thirds: (raw[8] != 0x80 && raw[8] <= 18).then(|| raw[8] as i8 - 9),
+            auto_wb: match raw[13] {
+                0 => Some(true),
+                0xff => None,
+                _ => Some(false),
+            },
+            wb_temp: (raw[13] != 0xff
+                && (controls::WB_TEMP_MIN..=controls::WB_TEMP_MAX).contains(&(temp as i32)))
+            .then_some(temp as i32),
+            blur: flag(raw[17]),
+            blur_level: (raw[17] == 1).then_some(raw[19]),
+            contrast: pct(raw[20]).filter(|_| image),
+            saturation: pct(raw[21]).filter(|_| image),
+            sharpness: pct(raw[22]).filter(|_| image),
+            hue: pct(raw[23]).filter(|_| image),
+            speed_name: human
+                .then(|| match raw[1] {
+                    5 => Some("slow"),
+                    6 => Some("medium"),
+                    7 => Some("fast"),
+                    _ => None,
+                })
+                .flatten(),
+            auto_zoom: human.then_some(raw[24]),
+            voice: raw[0] == 0xff && raw[25] == 0x02,
+            manual_focus: (raw[2] == 0)
+                .then(|| u16::from_le_bytes([raw[4], raw[5]]))
+                .filter(|&v| v <= 100),
+            iso: (raw[6] == 0 && raw[11] != 0xff).then(|| raw[11] as u32 * 100),
+            iso_range: iso_step(raw[33]).zip(iso_step(raw[34])),
+            wb_shift: (raw[31] != 0xff && raw[32] != 0xff)
+                .then(|| ((raw[31] as f32 - 28.0) / 4.0, (raw[32] as f32 - 28.0) / 4.0)),
+            raw,
+        })
+    }
+}
+
+/// Image controls exposed by `tinyctl image`.
+pub const IMAGE_CONTROLS: [&str; 4] = ["hue", "contrast", "saturation", "sharpness"];
+
+fn image_cid(name: &str) -> Result<u32> {
+    Ok(match name {
+        "hue" => controls::CID_HUE,
+        "contrast" => controls::CID_CONTRAST,
+        "saturation" => controls::CID_SATURATION,
+        "sharpness" => controls::CID_SHARPNESS,
+        _ => {
+            return Err(Error::Usage(format!(
+                "image control must be one of {}",
+                IMAGE_CONTROLS.join(", ")
+            )))
+        }
+    })
+}
+
+/// Decode a flat selector-13 preset entry. Layout (60 bytes): status u8
+/// (0 = valid entry), slot index u8 (0-based), pad u16, pitch i16 and yaw i16
+/// in hundredths of a degree, zoom u16 in hundredths of a ratio, then a
+/// NUL-terminated base64 name.
+fn decode_preset_entry(b: &[u8; 60]) -> Option<(u8, Pose, Option<String>)> {
+    // An all-zero header is what a failed read looks like; a real preset
+    // always has zoom >= 1.0, so never mistake it for an occupied slot.
+    if b[0] != 0 || b[..10].iter().all(|&x| x == 0) || b[1] > PRESET_SLOTS - 1 {
+        return None;
+    }
+    let i16_at = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]) as f64 / 100.0;
+    let pose = Pose {
+        tilt_deg: i16_at(4),
+        pan_deg: i16_at(6),
+        zoom_ratio: u16::from_le_bytes([b[8], b[9]]) as f64 / 100.0,
+    };
+    let end = b[10..].iter().position(|&x| x == 0).map_or(60, |p| 10 + p);
+    let name = base64_decode(&b[10..end])
+        .map(|v| String::from_utf8_lossy(&v).trim().to_string())
+        .filter(|n| !n.is_empty());
+    Some((b[1] + 1, pose, name))
+}
+
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0);
+    for &c in input.iter().filter(|&&c| c != b'=') {
+        acc = (acc << 6) | val(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+fn pose_payload(prefix: u32, p: &Pose, trailer: f32) -> Vec<u8> {
+    let mut v = prefix.to_le_bytes().to_vec();
+    for f in [
+        p.pan_deg as f32,
+        p.tilt_deg as f32,
+        0.0,
+        p.zoom_ratio as f32,
+        trailer,
+    ] {
+        v.extend_from_slice(&f.to_le_bytes());
+    }
+    v
+}
+
+fn check_slot(slot: u8) -> Result<u32> {
+    if !(1..=PRESET_SLOTS).contains(&slot) {
+        return Err(Error::OutOfRange {
+            what: "preset slot",
+            min: 1,
+            max: PRESET_SLOTS as i64,
+            got: slot as i64,
+        });
+    }
+    Ok(slot as u32 - 1)
+}
+
+/// An open camera (control fd; reads do not wake a sleeping camera).
 pub struct Device {
     fd: VideoFd,
     path: String,
+    model: &'static Model,
 }
 
 static SEQ: AtomicU16 = AtomicU16::new(0);
@@ -171,23 +518,32 @@ fn next_seq() -> u16 {
 }
 
 impl Device {
-    /// Discover and open the first Tiny 3 family camera. Holds the fd (blocks sleep).
-    pub fn open_default() -> Result<Device> {
-        let path = crate::discover::find_device()?;
-        Device::open_path(&path)
+    /// Open a discovered camera. Holds the fd (blocks sleep).
+    pub fn open_camera(cam: &crate::discover::Camera) -> Result<Device> {
+        Ok(Device {
+            fd: VideoFd::open(&cam.node)?,
+            path: cam.node.clone(),
+            model: cam.model,
+        })
     }
 
-    /// Open a specific node path. Holds the fd (blocks sleep).
+    /// Open a specific node path. Holds the fd (blocks sleep). The model is
+    /// looked up from sysfs; a non-OBSBOT node is refused.
     pub fn open_path(path: &str) -> Result<Device> {
-        let fd = VideoFd::open(path)?;
+        let cam = crate::discover::camera_for_path(path)?;
         Ok(Device {
-            fd,
+            fd: VideoFd::open(path)?,
             path: path.to_string(),
+            model: cam.model,
         })
     }
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    pub fn model(&self) -> &'static Model {
+        self.model
     }
 
     pub fn fd(&self) -> &VideoFd {
@@ -207,8 +563,25 @@ impl Device {
     /// match. The mailbox retains the previous reply, so matching both is
     /// required; latency exceeds a fixed sleep, so we poll.
     fn transact_get(&self, receiver: u8, cmd: u16, what: &'static str) -> Result<frame::Reply> {
+        self.transact_get_with(receiver, cmd, &[], what)
+    }
+
+    /// GET with a request payload (flags `0x21`), e.g. a slot index — the
+    /// form parameterized preset GETs require. Empty payload = header-only.
+    fn transact_get_with(
+        &self,
+        receiver: u8,
+        cmd: u16,
+        request: &[u8],
+        what: &'static str,
+    ) -> Result<frame::Reply> {
         let seq = next_seq();
-        let f = frame::build(FLAG_GET, seq, receiver, cmd, &[]);
+        let flags = if request.is_empty() {
+            FLAG_GET
+        } else {
+            FLAG_GET | 0x20
+        };
+        let f = frame::build(flags, seq, receiver, cmd, request);
         self.fd.xu_set(XU_UNIT, SEL_CMD, &f)?;
         for _ in 0..12 {
             std::thread::sleep(Duration::from_millis(50));
@@ -219,6 +592,12 @@ impl Device {
                 // swaps sender/receiver, so sender is no longer the host. This
                 // rejects an echoed request frame sitting in the mailbox.
                 if r.seq == seq && r.cmd == cmd && r.sender != frame::SENDER_HOST {
+                    if let Some(code) = r.error {
+                        return Err(Error::Config(format!(
+                            "the {} rejected the {what} request (firmware error {code:#06x})",
+                            self.model.name
+                        )));
+                    }
                     return Ok(r);
                 }
             }
@@ -230,11 +609,13 @@ impl Device {
 
     /// Vendor sleep: LED off, gimbal parks. Verified on Tiny 3 Lite.
     pub fn sleep(&self) -> Result<()> {
+        self.model.require(Feature::Sleep)?;
         self.set_power(true)
     }
 
     /// Vendor wake: LED on, gimbal lifts back up. Verified on Tiny 3 Lite.
     pub fn wake(&self) -> Result<()> {
+        self.model.require(Feature::Sleep)?;
         self.set_power(false)
     }
 
@@ -243,6 +624,7 @@ impl Device {
     /// Raw selector-6 TLV 0x0b carries a little-endian u16 seconds value.
     /// Readback at status bytes 10..12 is verified on Tiny 3 Lite.
     pub fn disable_auto_sleep(&self) -> Result<()> {
+        self.model.require(Feature::AutoSleepTimer)?;
         if decode_auto_sleep(&self.fd.xu_get(XU_UNIT, SEL_STATUS)?) == 0 {
             return Ok(());
         }
@@ -254,7 +636,20 @@ impl Device {
                 return Ok(());
             }
         }
-        Err(Error::NoReply("disabled firmware auto-sleep timer"))
+        Err(self.model.unconfirmed(Feature::AutoSleepTimer))
+    }
+
+    /// Disable the firmware timer where possible, then wake. On a model where
+    /// the timer is not verified, failing to disable it is reported as a
+    /// warning (returned) rather than blocking the wake itself.
+    pub fn wake_managed(&self) -> Result<Option<Error>> {
+        let warning = match self.disable_auto_sleep() {
+            Ok(()) => None,
+            Err(e) if self.model.support(Feature::AutoSleepTimer) != Support::Verified => Some(e),
+            Err(e) => return Err(e),
+        };
+        self.wake()?;
+        Ok(warning)
     }
 
     fn set_power(&self, asleep: bool) -> Result<()> {
@@ -267,7 +662,7 @@ impl Device {
                 return Ok(());
             }
         }
-        Err(Error::NoReply("confirmed power transition"))
+        Err(self.model.unconfirmed(Feature::Sleep))
     }
 
     // --- identity ---
@@ -286,10 +681,375 @@ impl Device {
         Ok(r.payload.iter().map(|b| format!("{b:02x}")).collect())
     }
 
+    // --- on-camera presets (slots 1..=3) and boot pose ---
+
+    fn decode_actions(&self, payload: &[u8]) -> Option<PresetActions> {
+        match self.model.family {
+            Family::Tiny3 => PresetActions::decode_tiny3(payload),
+            _ => PresetActions::decode(payload),
+        }
+    }
+
+    /// Read all three on-camera preset slots (the ones OBSBOT Center shows).
+    /// Flat selector 12 lists occupied slots; echoing it back resets the
+    /// selector-13 cursor, which then yields one entry per read.
+    pub fn presets(&self) -> Result<Vec<PresetSlot>> {
+        self.model.require(Feature::PresetRecall)?;
+        if self.model.family == Family::Tiny3 {
+            // The Tiny 3 publishes no preset list or positions, but its
+            // settings record only answers for slots that hold a preset.
+            return Ok((1..=PRESET_SLOTS)
+                .map(|slot| PresetSlot {
+                    slot,
+                    occupied: self.preset_actions(slot).is_ok(),
+                    pose: None,
+                    name: None,
+                })
+                .collect());
+        }
+        let list = self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST)?;
+        let count = list[0];
+        // A dead/asleep read returns all zeros; a genuine empty store does not.
+        if count > PRESET_SLOTS || list.iter().all(|&b| b == 0) {
+            return Err(Error::NoReply("on-camera preset list"));
+        }
+        // Echo exactly what the camera returned — the only write to selector
+        // 12 known to be safe.
+        self.fd.xu_set(XU_UNIT, SEL_PRESET_LIST, &list)?;
+        let mut slots: Vec<PresetSlot> = (1..=PRESET_SLOTS)
+            .map(|slot| PresetSlot {
+                slot,
+                occupied: false,
+                pose: None,
+                name: None,
+            })
+            .collect();
+        for _ in 0..count {
+            let entry = self.fd.xu_get(XU_UNIT, SEL_PRESET_ENTRY)?;
+            match decode_preset_entry(&entry) {
+                Some((slot, pose, name)) => {
+                    let s = &mut slots[slot as usize - 1];
+                    s.occupied = true;
+                    s.pose = Some(pose);
+                    s.name = name;
+                }
+                None => break,
+            }
+        }
+        Ok(slots)
+    }
+
+    fn preset(&self, slot: u8) -> Result<PresetSlot> {
+        check_slot(slot)?;
+        Ok(self.presets()?.swap_remove(slot as usize - 1))
+    }
+
+    /// The gimbal's current pose: pan/tilt from the UVC controls, zoom mapped
+    /// from UVC zoom (min..max) onto the camera's 1.0..2.0 ratio.
+    pub fn current_pose(&self) -> Result<Pose> {
+        let pan = self.fd.get_ctrl(controls::CID_PAN_ABSOLUTE)?;
+        let tilt = self.fd.get_ctrl(controls::CID_TILT_ABSOLUTE)?;
+        let zoom = self.fd.get_ctrl(controls::CID_ZOOM_ABSOLUTE)?;
+        let (zmin, zmax) = match self.fd.query_ctrl(controls::CID_ZOOM_ABSOLUTE) {
+            Ok(r) if r.max > r.min => (r.min, r.max),
+            _ => (0, 100),
+        };
+        Ok(Pose {
+            pan_deg: pan as f64 / controls::ASEC_PER_DEG,
+            tilt_deg: tilt as f64 / controls::ASEC_PER_DEG,
+            zoom_ratio: 1.0 + (zoom - zmin) as f64 / (zmax - zmin) as f64,
+        })
+    }
+
+    /// Move to on-camera preset `slot`. The vendor recall moves the gimbal
+    /// but leaves uvcvideo's cached pan/tilt readback stale, so the slot's
+    /// pan/tilt is also written through UVC (same target, keeps `status`
+    /// honest).
+    pub fn preset_recall(&self, slot: u8) -> Result<Option<Pose>> {
+        let idx = check_slot(slot)?;
+        // A sleeping camera acknowledges moves and ignores them.
+        if self.fd.xu_get(XU_UNIT, SEL_STATUS)?[ST_SLEEP] != 0 {
+            return Err(Error::Config(
+                "the camera is asleep; wake it before recalling a preset".into(),
+            ));
+        }
+        let p = self.preset(slot)?;
+        if !p.occupied {
+            return Err(Error::Config(format!(
+                "preset {slot} is empty on this camera (save it in OBSBOT Center)"
+            )));
+        }
+        let mut payload = idx.to_le_bytes().to_vec();
+        for _ in 0..4 {
+            payload.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        self.send_set(RCV_AI, CMD_PRESET_TRIG, &payload)?;
+        // Without a known position (Tiny 3) the UVC readback cannot be
+        // re-synced; `status` keeps showing the last host-set angle.
+        let Some(pose) = p.pose else {
+            return Ok(None);
+        };
+        let clamp = |cid, deg: f64| {
+            let (lo, hi) = self.gimbal_range_deg(cid);
+            ((deg.clamp(lo, hi)) * controls::ASEC_PER_DEG).round() as i32
+        };
+        self.fd.set_ctrl(
+            controls::CID_PAN_ABSOLUTE,
+            clamp(controls::CID_PAN_ABSOLUTE, pose.pan_deg),
+        )?;
+        self.fd.set_ctrl(
+            controls::CID_TILT_ABSOLUTE,
+            clamp(controls::CID_TILT_ABSOLUTE, pose.tilt_deg),
+        )?;
+        Ok(Some(pose))
+    }
+
+    /// Store the current pose in on-camera slot `slot` (create or overwrite),
+    /// then read the slot back to confirm the camera kept it.
+    pub fn preset_save(&self, slot: u8) -> Result<Pose> {
+        preset_writes_allowed()?;
+        self.model.require(Feature::PresetSave)?;
+        let idx = check_slot(slot)?;
+        let occupied = self.preset(slot)?.pose.is_some();
+        let pose = self.current_pose()?;
+        let cmd = if occupied {
+            CMD_PRESET_UPDATE
+        } else {
+            CMD_PRESET_ADD
+        };
+        // Trailing -1000.0 is the sentinel ADD/UPDATE require.
+        self.send_set(RCV_AI, cmd, &pose_payload(idx, &pose, -1000.0))?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self
+                .preset(slot)?
+                .pose
+                .is_some_and(|stored| stored.close_to(&pose))
+            {
+                return Ok(pose);
+            }
+        }
+        Err(self.model.unconfirmed(Feature::PresetSave))
+    }
+
+    /// Empty on-camera slot `slot`.
+    pub fn preset_delete(&self, slot: u8) -> Result<()> {
+        preset_writes_allowed()?;
+        self.model.require(Feature::PresetSave)?;
+        let idx = check_slot(slot)?;
+        if self.preset(slot)?.pose.is_none() {
+            return Ok(());
+        }
+        self.send_set(RCV_AI, CMD_PRESET_DELETE, &idx.to_le_bytes())?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self.preset(slot)?.pose.is_none() {
+                return Ok(());
+            }
+        }
+        Err(self.model.unconfirmed(Feature::PresetSave))
+    }
+
+    /// A preset slot's stored "Additional settings" (read-only GET with the
+    /// slot index).
+    pub fn preset_actions(&self, slot: u8) -> Result<PresetActions> {
+        self.model.require(Feature::PresetRecall)?;
+        let idx = check_slot(slot)?;
+        let r = self.transact_get_with(
+            RCV_AI,
+            CMD_PRESET_ACTIONS_GET,
+            &idx.to_le_bytes(),
+            "preset settings",
+        )?;
+        self.decode_actions(&r.payload)
+            .ok_or(Error::NoReply("preset settings"))
+    }
+
+    /// The power-on settings (a copy taken when OBSBOT Center sets a preset
+    /// "As Initial State"; the camera applies it at boot).
+    pub fn boot_actions(&self) -> Result<PresetActions> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_ACTIONS_GET, "power-on settings")?;
+        self.decode_actions(&r.payload)
+            .ok_or(Error::NoReply("power-on settings"))
+    }
+
+    /// Which slot the power-on position was copied from (first field of the
+    /// boot-pose record, 0-based), if it holds a slot index.
+    pub fn boot_slot(&self) -> Result<Option<u8>> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
+        let idx = r
+            .payload
+            .get(..4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        Ok(idx
+            .filter(|&i| i < PRESET_SLOTS as u32)
+            .map(|i| i as u8 + 1))
+    }
+
+    /// The pose the camera moves to when it powers on.
+    pub fn boot_pose(&self) -> Result<Pose> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
+        // Tiny 2: six aligned f32 [slot, yaw, pitch, roll, zoom, 0].
+        // Tiny 3: 38 bytes — u32 slot, a pad byte, then unaligned f32 yaw,
+        // pitch, roll, zoom (and a crop window).
+        let (yaw, pitch, zoom) = match self.model.family {
+            Family::Tiny3 => (5, 9, 17),
+            _ => (4, 8, 16),
+        };
+        if r.payload.len() < zoom + 4 {
+            return Err(Error::NoReply("power-on position"));
+        }
+        let f = |o: usize| f32::from_le_bytes(r.payload[o..o + 4].try_into().unwrap()) as f64;
+        Ok(Pose {
+            pan_deg: f(yaw),
+            tilt_deg: f(pitch),
+            zoom_ratio: f(zoom),
+        })
+    }
+
+    /// Make on-camera preset `slot` the power-on state, as OBSBOT Center's
+    /// "As Initial State" does: the power-on record becomes a copy of the
+    /// slot's pose (with the slot index first) and of its 40-byte settings
+    /// record, byte for byte. Both are read back and must match exactly;
+    /// otherwise this fails and OBSBOT Center can set it instead.
+    ///
+    /// Only record shapes read from the camera are written: the 24-byte boot
+    /// pose (`AI_SET_GIM_BOOT_POS`, confirmed by replug upstream) and the
+    /// unchanged 40-byte actions record (`AI_SET_BOOT_PRESETS_ACTIONS`, the
+    /// command Center sends).
+    pub fn set_power_on_preset(&self, slot: u8) -> Result<(Pose, PresetActions)> {
+        self.model.require(Feature::PowerOnPose)?;
+        if self.model.family == Family::Tiny3 {
+            return Err(Error::Config(format!(
+                "the {} does not report preset positions, so its power-on state can't be \
+                 copied from a preset here; set it in OBSBOT Center (As Initial State)",
+                self.model.name
+            )));
+        }
+        let idx = check_slot(slot)?;
+        let pose = self.preset(slot)?.pose.ok_or_else(|| {
+            Error::Config(format!(
+                "preset {slot} is empty; save it in OBSBOT Center first"
+            ))
+        })?;
+        let actions = self.preset_actions(slot)?;
+        self.send_set(RCV_AI, CMD_BOOT_POS_SET, &pose_payload(idx, &pose, 0.0))?;
+        std::thread::sleep(Duration::from_millis(200));
+        self.send_set(RCV_AI, CMD_BOOT_ACTIONS_SET, &actions.raw)?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self.boot_slot()? == Some(slot)
+                && self.boot_pose()?.close_to(&pose)
+                && self.boot_actions()?.raw == actions.raw
+            {
+                return Ok((pose, actions));
+            }
+        }
+        Err(Error::Config(format!(
+            "the {} did not confirm the new power-on state; check `preset list` and set it \
+             in OBSBOT Center if it is wrong",
+            self.model.name
+        )))
+    }
+
+    /// Read-only dump of the records that may hold OBSBOT Center's "As
+    /// Initial State" (power-on) settings, for decoding where the tracking
+    /// mode is stored. Each is a header-only GET of a named firmware command;
+    /// nothing is written.
+    pub fn boot_records(&self) -> Vec<(&'static str, Result<Vec<u8>>)> {
+        [
+            ("AI_GET_GIM_BOOT_POS 0x3884", RCV_AI, CMD_BOOT_POS_GET),
+            ("AI_GET_BOOT_PRESETS_ACTIONS 0x3E84", RCV_AI, 0x3E84),
+            ("AI_GET_INITIAL_POSITION_OPA 0x1C44", RCV_AI, 0x1C44),
+            ("CAM_GET_BOOT_STATE 0x0382", RCV_CAMERA, 0x0382),
+        ]
+        .into_iter()
+        .map(|(name, rcv, cmd)| (name, self.transact_get(rcv, cmd, name).map(|r| r.payload)))
+        .chain((0..PRESET_SLOTS as u32).flat_map(|idx| {
+            const ACTIONS: [&str; 3] = [
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 1",
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 2",
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 3",
+            ];
+            const OPA: [&str; 3] = [
+                "AI_GET_PRESET_OPA 0x1D04 slot 1",
+                "AI_GET_PRESET_OPA 0x1D04 slot 2",
+                "AI_GET_PRESET_OPA 0x1D04 slot 3",
+            ];
+            let i = idx as usize;
+            [(ACTIONS[i], 0x3DC4u16), (OPA[i], 0x1D04)].map(|(name, cmd)| {
+                (
+                    name,
+                    self.transact_get_with(RCV_AI, cmd, &idx.to_le_bytes(), name)
+                        .map(|r| r.payload),
+                )
+            })
+        }))
+        .chain(std::iter::once((
+            "AI_GET_GIMBAL_PRESET_LIST 0x3B44",
+            self.transact_get(RCV_AI, 0x3B44, "AI_GET_GIMBAL_PRESET_LIST")
+                .map(|r| r.payload),
+        )))
+        .chain((0..PRESET_SLOTS as u32).flat_map(|idx| {
+            const VALUE: [&str; 3] = [
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 1",
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 2",
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 3",
+            ];
+            const NAME: [&str; 3] = [
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 1",
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 2",
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 3",
+            ];
+            let i = idx as usize;
+            [(VALUE[i], 0x3A44u16), (NAME[i], 0x3B04)].map(|(name, cmd)| {
+                (
+                    name,
+                    self.transact_get_with(RCV_AI, cmd, &idx.to_le_bytes(), name)
+                        .map(|r| r.payload),
+                )
+            })
+        }))
+        .chain(std::iter::once((
+            "XU selector 0x0C (raw preset list, GET only)",
+            self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST).map(|b| b.to_vec()),
+        )))
+        .chain(std::iter::once((
+            "AI_GET_PRESETS_ACTIONS 0x3DC4 (no slot)",
+            self.transact_get(RCV_AI, 0x3DC4, "AI_GET_PRESETS_ACTIONS")
+                .map(|r| r.payload),
+        )))
+        .collect()
+    }
+
+    /// Raw selector-13 preset entries (all 60 bytes), to look for fields past
+    /// the name. Read-only apart from the cursor-reset echo `presets` uses.
+    pub fn raw_preset_entries(&self) -> Result<Vec<[u8; 60]>> {
+        let list = self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST)?;
+        if list[0] > PRESET_SLOTS || list.iter().all(|&b| b == 0) {
+            return Err(Error::NoReply("on-camera preset list"));
+        }
+        self.fd.xu_set(XU_UNIT, SEL_PRESET_LIST, &list)?;
+        (0..list[0])
+            .map(|_| self.fd.xu_get(XU_UNIT, SEL_PRESET_ENTRY))
+            .collect()
+    }
+
+    /// Restore the factory power-on position.
+    pub fn reset_boot_pose(&self) -> Result<()> {
+        preset_writes_allowed()?;
+        self.model.require(Feature::PowerOnPose)?;
+        self.send_set(RCV_AI, CMD_BOOT_POS_RST, &[])
+    }
+
     // --- AI tracking ---
 
     /// Set the AI tracking mode (or Off). Raw TLV on selector 6.
     pub fn set_tracking(&self, mode: TrackMode) -> Result<()> {
+        self.model.require(Feature::Tracking(mode))?;
         let (category, submode) = mode.category_submode();
         self.fd.xu_set(
             XU_UNIT,
@@ -301,6 +1061,7 @@ impl Device {
     /// Set tracking speed. EXPERIMENTAL on Tiny 3 (frame from Tiny 2 capture).
     /// `sport` = fast; otherwise standard.
     pub fn set_track_speed(&self, sport: bool) -> Result<()> {
+        self.model.require(Feature::TrackSpeed)?;
         let v: u8 = if sport { 0x02 } else { 0x00 };
         self.send_set(RCV_AI, CMD_TRACK_SPEED, &[v])
     }
@@ -316,6 +1077,7 @@ impl Device {
     /// centered. Writing pan=0/tilt=0 both moves the gimbal AND keeps the
     /// readback honest. The vendor frame is preserved in `recenter_vendor`.
     pub fn recenter(&self) -> Result<()> {
+        self.model.require(Feature::Gimbal)?;
         self.fd.set_ctrl(controls::CID_PAN_ABSOLUTE, 0)?;
         self.fd.set_ctrl(controls::CID_TILT_ABSOLUTE, 0)
     }
@@ -339,24 +1101,75 @@ impl Device {
         self.send_set(RCV_AI, CMD_GIMBAL_MOVE, &p)
     }
 
-    /// Absolute pan via the standard UVC control. `deg` is clamped to ±130°.
-    pub fn set_pan_deg(&self, deg: f64) -> Result<()> {
-        self.fd.set_ctrl(
-            controls::CID_PAN_ABSOLUTE,
-            controls::deg_to_asec(deg, controls::PAN_MAX),
+    /// Gimbal range in degrees for pan or tilt, as reported by this camera.
+    /// Tiny 2 and Tiny 3 gimbals differ, so this is queried, not assumed.
+    /// Read an image control (hue, contrast, saturation, sharpness):
+    /// (value, min, max, default). The value is uvcvideo's cache once a
+    /// control has been written, so firmware-side changes do not show.
+    pub fn image(&self, name: &str) -> Result<(i32, crate::ioctl::CtrlRange)> {
+        let cid = image_cid(name)?;
+        Ok((self.fd.get_ctrl(cid)?, self.fd.query_ctrl(cid)?))
+    }
+
+    /// Set an image control within the range the camera reports.
+    pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
+        let cid = image_cid(name)?;
+        let r = self.fd.query_ctrl(cid)?;
+        if !(r.min..=r.max).contains(&value) {
+            return Err(Error::OutOfRange {
+                what: "image value",
+                min: r.min as i64,
+                max: r.max as i64,
+                got: value as i64,
+            });
+        }
+        self.fd.set_ctrl(cid, value)
+    }
+
+    pub fn gimbal_range_deg(&self, cid: u32) -> (f64, f64) {
+        let fallback = if cid == controls::CID_TILT_ABSOLUTE {
+            controls::TILT_MAX
+        } else {
+            controls::PAN_MAX
+        };
+        let (min, max) = match self.fd.query_ctrl(cid) {
+            Ok(r) if r.max > r.min => (r.min, r.max),
+            _ => (-fallback, fallback),
+        };
+        (
+            min as f64 / controls::ASEC_PER_DEG,
+            max as f64 / controls::ASEC_PER_DEG,
         )
     }
 
-    /// Absolute tilt via the standard UVC control. `deg` is clamped to ±90°.
+    fn set_angle(&self, cid: u32, what: &'static str, deg: f64) -> Result<()> {
+        self.model.require(Feature::Gimbal)?;
+        let (min, max) = self.gimbal_range_deg(cid);
+        if !(min..=max).contains(&deg) {
+            return Err(Error::OutOfRange {
+                what,
+                min: min.round() as i64,
+                max: max.round() as i64,
+                got: deg.round() as i64,
+            });
+        }
+        let asec = (deg * controls::ASEC_PER_DEG).round() as i32;
+        self.fd.set_ctrl(cid, asec)
+    }
+
+    /// Absolute pan via the standard UVC control, within the camera's range.
+    pub fn set_pan_deg(&self, deg: f64) -> Result<()> {
+        self.set_angle(controls::CID_PAN_ABSOLUTE, "pan degrees", deg)
+    }
+
+    /// Absolute tilt via the standard UVC control, within the camera's range.
     pub fn set_tilt_deg(&self, deg: f64) -> Result<()> {
-        self.fd.set_ctrl(
-            controls::CID_TILT_ABSOLUTE,
-            controls::deg_to_asec(deg, controls::TILT_MAX),
-        )
+        self.set_angle(controls::CID_TILT_ABSOLUTE, "tilt degrees", deg)
     }
 
     /// Absolute zoom 0..=100 via the standard UVC control.
     pub fn set_zoom(&self, zoom: i32) -> Result<()> {
+        self.model.require(Feature::Zoom)?;
         if !(0..=100).contains(&zoom) {
             return Err(Error::OutOfRange {
                 what: "zoom",
@@ -372,6 +1185,7 @@ impl Device {
 
     /// Pin manual white balance at `temp` Kelvin, in the firmware-safe order.
     pub fn set_wb_temp(&self, temp: i32) -> Result<()> {
+        self.model.require(Feature::WhiteBalance)?;
         if !(controls::WB_TEMP_MIN..=controls::WB_TEMP_MAX).contains(&temp) {
             return Err(Error::OutOfRange {
                 what: "white balance temperature (Kelvin)",
@@ -390,12 +1204,14 @@ impl Device {
 
     /// HDR/WDR on or off. Raw TLV on selector 6.
     pub fn set_hdr(&self, on: bool) -> Result<()> {
+        self.model.require(Feature::Hdr)?;
         self.fd
             .xu_set(XU_UNIT, SEL_STATUS, &[TLV_HDR, 0x01, on as u8])
     }
 
     /// Field of view: 0 wide(86°), 1 medium(78°), 2 narrow(65°).
     pub fn set_fov(&self, level: u8) -> Result<()> {
+        self.model.require(Feature::Fov)?;
         if level > 2 {
             return Err(Error::OutOfRange {
                 what: "fov level",
@@ -410,12 +1226,14 @@ impl Device {
     /// Face-priority auto-exposure: false = global metering, true = face.
     /// Requires auto-exposure on.
     pub fn set_face_ae(&self, face: bool) -> Result<()> {
+        self.model.require(Feature::FaceAe)?;
         self.fd
             .xu_set(XU_UNIT, SEL_STATUS, &[TLV_FACE_AE, 0x01, face as u8])
     }
 
     /// Auto exposure on/off (standard UVC menu control).
     pub fn set_auto_exposure(&self, auto: bool) -> Result<()> {
+        self.model.require(Feature::Exposure)?;
         let v = if auto {
             controls::EXPOSURE_AUTO_MODE
         } else {
@@ -427,6 +1245,7 @@ impl Device {
     /// Manual exposure time (device units, 1..=2500 ≈ 0.1ms..250ms). Sets
     /// manual mode first.
     pub fn set_exposure(&self, value: i32) -> Result<()> {
+        self.model.require(Feature::Exposure)?;
         if !(1..=2500).contains(&value) {
             return Err(Error::OutOfRange {
                 what: "exposure",
@@ -438,6 +1257,11 @@ impl Device {
         self.fd
             .set_ctrl(controls::CID_EXPOSURE_AUTO, controls::EXPOSURE_MANUAL_MODE)?;
         self.fd.set_ctrl(controls::CID_EXPOSURE_ABSOLUTE, value)
+    }
+
+    /// Raw vendor status block only (no UVC reads) — used by `probe`.
+    pub fn raw_status(&self) -> Result<[u8; 60]> {
+        self.fd.xu_get(XU_UNIT, SEL_STATUS)
     }
 
     // --- status ---
@@ -456,13 +1280,16 @@ impl Device {
             auto_sleep_seconds: decode_auto_sleep(&s),
             hdr: s[ST_HDR] != 0,
             tracking: TrackMode::from_status(s[ST_AI_CATEGORY], s[ST_AI_SUBMODE]),
-            tracking_sport: s[ST_TRACK_SPEED] == 2,
+            tracking_sport: self.model.track_speed_offset.map(|o| s[o] == 2),
+            fov: s[ST_FOV],
+            face_ae: s[ST_FACE_AE] != 0,
             auto_wb,
             wb_temp,
             pan_deg: pan as f64 / controls::ASEC_PER_DEG,
             tilt_deg: tilt as f64 / controls::ASEC_PER_DEG,
             zoom,
             auto_exposure: ae == controls::EXPOSURE_AUTO_MODE,
+            raw: s,
         })
     }
 }
@@ -474,6 +1301,172 @@ fn decode_auto_sleep(status: &[u8; 60]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hexbytes(s: &str) -> Vec<u8> {
+        s.split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// Real Tiny 2 records, captured against settings entered in OBSBOT Center.
+    #[test]
+    fn preset_actions_decode_matches_obsbot_center() {
+        let pad = " 00".repeat(16);
+        // Preset 1: Normal, Standard, AF on/global, AE on/global, comp +1,
+        // WB auto, blur off, contrast/sat/sharp/hue 47/48/49/40.
+        let a = PresetActions::decode(&hexbytes(&format!(
+            "00 00 01 00 10 00 01 00 0c 32 00 40 00 00 b8 0b 01 00 00 01 2f 30 31 28{pad}"
+        )))
+        .unwrap();
+        assert_eq!(a.tracking, Some(TrackMode::Normal));
+        assert_eq!(a.sport, Some(false));
+        assert_eq!((a.auto_focus, a.face_focus), (Some(true), Some(false)));
+        assert_eq!((a.auto_exposure, a.face_ae), (Some(true), Some(false)));
+        assert_eq!(a.exposure_comp_thirds, Some(3));
+        assert_eq!(a.auto_wb, Some(true));
+        assert_eq!(a.blur, Some(false));
+        assert_eq!(
+            (a.contrast, a.saturation, a.sharpness, a.hue),
+            (Some(47), Some(48), Some(49), Some(40))
+        );
+        // Preset 2: Desk, face focus/AE, comp 0, WB 4400, blur on level 2.
+        let b = PresetActions::decode(&hexbytes(&format!(
+            "05 00 01 01 10 00 01 01 09 32 00 40 00 05 30 11 01 01 00 02 25 26 27 1e{pad}"
+        )))
+        .unwrap();
+        assert_eq!(b.tracking, Some(TrackMode::Desk));
+        assert_eq!((b.face_focus, b.face_ae), (Some(true), Some(true)));
+        assert_eq!(b.exposure_comp_thirds, Some(0));
+        assert_eq!((b.auto_wb, b.wb_temp), (Some(false), Some(4400)));
+        assert_eq!((b.blur, b.blur_level), (Some(true), Some(2)));
+        assert_eq!(b.hue, Some(30));
+        // Preset 3: Group, Motion speed, AF/AE/WB off (unset), blur level 8.
+        let c = PresetActions::decode(&hexbytes(&format!(
+            "09 01 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 01 01 00 08 1b 1c 1d 14{pad}"
+        )))
+        .unwrap();
+        assert_eq!(c.tracking, Some(TrackMode::Group));
+        assert_eq!(c.sport, Some(true));
+        assert_eq!(
+            (c.auto_focus, c.auto_exposure, c.auto_wb),
+            (None, None, None)
+        );
+        assert_eq!((c.exposure_comp_thirds, c.wb_temp), (None, None));
+        assert_eq!(c.blur_level, Some(8));
+        // Remaining observed mode bytes.
+        assert_eq!(actions_track_mode(0xff), Some(TrackMode::Off));
+        assert_eq!(actions_track_mode(1), Some(TrackMode::UpperBody));
+        assert_eq!(actions_track_mode(6), Some(TrackMode::Whiteboard));
+        assert_eq!(actions_track_mode(7), None);
+    }
+
+    /// Real Tiny 3 records against OBSBOT Center settings (two rounds).
+    #[test]
+    fn tiny3_preset_actions_decode() {
+        let t3 = |s: &str| PresetActions::decode_tiny3(&hexbytes(s)).unwrap();
+        let tail = " ff".repeat(14);
+        // Round 2: single / group, slow, auto zoom off; whiteboard.
+        let single = t3(&format!(
+            "0b 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 ff{tail}"
+        ));
+        assert_eq!(single.tracking, Some(TrackMode::Normal));
+        assert_eq!(
+            (single.speed_name, single.auto_zoom),
+            (Some("slow"), Some(0))
+        );
+        let group = t3(&format!(
+            "0c 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 ff{tail}"
+        ));
+        assert_eq!(group.tracking, Some(TrackMode::Group));
+        let wb = t3(&format!(
+            "ff 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 01{tail}"
+        ));
+        assert_eq!(wb.tracking, Some(TrackMode::Whiteboard));
+        assert_eq!(wb.speed_name, None);
+        assert_eq!(wb.contrast, None);
+        // Round 1, preset 1: voice, AF/AE face, AWB shift 2.5/3.75, blur 2,
+        // contrast/sat/sharp/hue 46-49.
+        let p1 = t3("ff 06 01 01 00 00 01 01 09 32 00 01 00 00 a0 0f 01 01 00 02 2e 2f 30 31 00 02 00 8d 00 a2 00 26 2b ff ff ff ff ff ff ff");
+        assert!(p1.voice && p1.tracking.is_none());
+        assert_eq!((p1.face_focus, p1.face_ae), (Some(true), Some(true)));
+        assert_eq!(p1.wb_shift, Some((2.5, 3.75)));
+        assert_eq!((p1.blur, p1.blur_level), (Some(true), Some(2)));
+        assert_eq!((p1.contrast, p1.hue), (Some(46), Some(49)));
+        // Round 1, preset 2: desk, comp +1, ISO range 200-6400, shift -1/-3.
+        let p2 = t3("ff 05 01 00 00 00 01 00 0c 32 00 01 00 00 a0 0f 01 00 00 02 24 25 26 27 00 00 00 8d 00 a2 00 18 10 02 07 ff ff ff ff ff");
+        assert_eq!(p2.tracking, Some(TrackMode::Desk));
+        assert_eq!(p2.exposure_comp_thirds, Some(3));
+        assert_eq!(p2.iso_range, Some((200, 6400)));
+        assert_eq!(p2.wb_shift, Some((-1.0, -3.0)));
+        // Round 1, preset 3 (voice replaced group, so human tracking is
+        // disabled): manual focus 52, manual exposure ISO 2200, WB manual
+        // 4000K, no image values.
+        let p3 = t3("ff 07 00 01 34 00 00 01 09 1f 00 16 00 05 a0 0f 00 00 00 00 ff ff ff ff 01 02 00 8d 00 a2 00 1c 1c ff ff ff ff ff ff ff");
+        assert!(p3.voice);
+        assert_eq!((p3.speed_name, p3.auto_zoom), (None, None));
+        assert_eq!(p3.manual_focus, Some(52));
+        assert_eq!(p3.iso, Some(2200));
+        assert_eq!((p3.auto_wb, p3.wb_temp), (Some(false), Some(4000)));
+        assert_eq!(p3.contrast, None);
+    }
+
+    #[test]
+    fn preset_writes_stay_disabled() {
+        let e = preset_writes_allowed().unwrap_err().to_string();
+        assert!(e.contains("disabled"), "{e}");
+    }
+
+    #[test]
+    fn preset_entry_decodes() {
+        let mut b = [0u8; 60];
+        b[1] = 1; // slot 2
+        b[4..6].copy_from_slice(&(-1500i16).to_le_bytes()); // tilt -15.00
+        b[6..8].copy_from_slice(&(2025i16).to_le_bytes()); // pan 20.25
+        b[8..10].copy_from_slice(&150u16.to_le_bytes()); // zoom 1.5
+        b[10..18].copy_from_slice(b"RGVzaw=="); // "Desk"
+        let (slot, pose, name) = decode_preset_entry(&b).unwrap();
+        assert_eq!(slot, 2);
+        assert_eq!(
+            (pose.pan_deg, pose.tilt_deg, pose.zoom_ratio),
+            (20.25, -15.0, 1.5)
+        );
+        assert_eq!(name.as_deref(), Some("Desk"));
+        // End-of-list markers and failed (all-zero) reads are not presets.
+        b[0] = 0x02;
+        assert!(decode_preset_entry(&b).is_none());
+        assert!(decode_preset_entry(&[0u8; 60]).is_none());
+        let mut bad = [0u8; 60];
+        bad[1] = 5;
+        bad[8] = 100;
+        assert!(decode_preset_entry(&bad).is_none());
+    }
+
+    #[test]
+    fn pose_payloads_have_the_widths_the_firmware_requires() {
+        let p = Pose {
+            pan_deg: -35.0,
+            tilt_deg: -20.0,
+            zoom_ratio: 1.0,
+        };
+        // Boot pose: [0, yaw, pitch, roll, zoom, 0] = 24 bytes.
+        let boot = pose_payload(0, &p, 0.0);
+        assert_eq!(boot.len(), 24);
+        assert_eq!(&boot[4..8], &(-35.0f32).to_le_bytes());
+        assert_eq!(&boot[20..24], &0.0f32.to_le_bytes());
+        // ADD/UPDATE: slot index then the same pose with a -1000 sentinel.
+        let add = pose_payload(2, &p, -1000.0);
+        assert_eq!(&add[0..4], &2u32.to_le_bytes());
+        assert_eq!(&add[20..24], &(-1000.0f32).to_le_bytes());
+        assert!(check_slot(0).is_err() && check_slot(4).is_err());
+        assert_eq!(check_slot(3).unwrap(), 2);
+    }
+
+    #[test]
+    fn tiny2_hand_tracking_readback_decodes() {
+        assert_eq!(TrackMode::from_status(6, 0), TrackMode::Hand);
+        assert_eq!(TrackMode::from_status(3, 0), TrackMode::Hand);
+        assert_eq!(TrackMode::from_status(2, 1), TrackMode::UpperBody);
+    }
 
     #[test]
     fn firmware_sleep_timer_is_little_endian_and_distinct_from_sleep_state() {

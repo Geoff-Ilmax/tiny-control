@@ -15,15 +15,15 @@ for plugin in librnnoise_ladspa sc4m_1916 fast_lookahead_limiter_1913; do
         exit 1
     fi
 done
-mkdir -p "$CONFIG/obsbot-tiny3" "$CONFIG/systemd/user"
-for path in "$CONFIG/obsbot-tiny3/obsbot-audio.conf" "$CONFIG/systemd/user/t3-audio.service"; do
+mkdir -p "$CONFIG/tiny-control" "$CONFIG/systemd/user"
+for path in "$CONFIG/tiny-control/tiny-audio.conf" "$CONFIG/systemd/user/tiny-audio.service"; do
     if [[ -f "$path" ]]; then cp -p "$path" "$path.bak.$(date +%s)"; fi
 done
-install -m644 "$REPO/packaging/pipewire/obsbot-audio.conf" "$CONFIG/obsbot-tiny3/obsbot-audio.conf"
+install -m644 "$REPO/packaging/pipewire/tiny-audio.conf" "$CONFIG/tiny-control/tiny-audio.conf"
 # Use the actual XDG path, including spaces, for systemd's argument parsing.
-sed "s|%h/.config/obsbot-tiny3/obsbot-audio.conf|\"$CONFIG/obsbot-tiny3/obsbot-audio.conf\"|" \
-    "$REPO/packaging/systemd/t3-audio.service" > "$CONFIG/systemd/user/t3-audio.service"
+sed "s|%h/.config/tiny-control/tiny-audio.conf|\"$CONFIG/tiny-control/tiny-audio.conf\"|" \
+    "$REPO/packaging/systemd/tiny-audio.service" > "$CONFIG/systemd/user/tiny-audio.service"
 systemctl --user daemon-reload
-systemctl --user enable t3-audio.service
-systemctl --user restart t3-audio.service
+systemctl --user enable tiny-audio.service
+systemctl --user restart tiny-audio.service
 printf '%s\n' 'Select OBSBOT Calls (Speech Optimized) as your call microphone.'

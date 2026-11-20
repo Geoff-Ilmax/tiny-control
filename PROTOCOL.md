@@ -1,6 +1,7 @@
-# OBSBOT Tiny 3 Lite — Linux control protocol notes
+# OBSBOT Tiny 2 / Tiny 3 — Linux control protocol notes
 
-Everything in this document was verified against a real OBSBOT Tiny 3 Lite
+Unless a section says otherwise, everything in this document was verified
+against a real OBSBOT Tiny 3 Lite
 (USB `3564:ff04`, firmware `bcdDevice 0510`) unless marked otherwise.
 Dead ends are documented too — they save the next person hours.
 
@@ -15,6 +16,198 @@ Dead ends are documented too — they save the next person hours.
 | Stable video node | `/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_3_Lite-video-index0` |
 
 Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
+
+## Other models and multiple cameras
+
+| Model | USB ID | Product string | Notes |
+|---|---|---|---|
+| Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; every command verified except tracking speed and the four framing modes (unsupported) |
+| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; every command verified |
+
+Model differences handled in code:
+
+- **Hand tracking readback.** The Tiny 2 reports hand tracking as AI category
+  `6` at status byte `0x18`, although the SET TLV uses category `3`
+  (observed by Tiny4Linux). Both decode to `hand`.
+- **Gimbal range.** Pan/tilt limits are read with `VIDIOC_QUERYCTRL` instead of
+  assuming the Tiny 3 Lite's ±130°/±90°.
+
+Cross-reference: [brendanwelsh/obsbot-tiny3-protocol](https://github.com/brendanwelsh/obsbot-tiny3-protocol)
+(MIT) measured a Tiny 3 on Windows using the V3 *frame* opcodes. Its findings
+that matter here:
+
+- **Tracking speed** (`AI_SET_TRACK_MODE` `0x0CC4`) is ACKed and ignored on the
+  Tiny 3 — reachable only through OBSBOT Center (OSC). Matches our probe: no
+  status byte follows it, so it is marked unsupported on the Tiny 3.
+- **AI modes were renumbered on the Tiny 3** for `AI_SET_AI_WORK_MODE` `0x0284`
+  (0 single, 1 group, 2 voice, 3 desk, 4 hand, 5 whiteboard), and the
+  framing sub-modes (upper body, close-up, headless, lower body) are Auto Zoom
+  options it could not reach over USB. This project sets AI mode through the
+  selector-6 TLV `0x16` instead, a different path that repo did not test; the
+  Tiny 3 echoes every TLV mode in status bytes `0x18`/`0x1c`, but an echo is
+  not proof of effect. **Checked visually on a Tiny 3:** normal, group, hand,
+  whiteboard and desk work through the TLV; upper body, close-up, headless and
+  lower body are echoed but change nothing — consistent with them being Auto
+  Zoom options there. They are marked unsupported on the Tiny 3 (and the Tiny
+  3 Lite, whose earlier "verification" was status echo only). All modes work
+  on the Tiny 2.
+- **FOV**: that repo found no setter. TLV `0x04` works here, confirmed by
+  status byte `0x11` and visually.
+- **Gotchas** it reports for the Tiny 3: UVC zoom can drift back or be
+  overridden while tracking or asleep; a single wake does not always take
+  (this project confirms wake by readback and the guard retries); the gain
+  control's firmware default is near-black; preset *writes* to the camera's
+  own slots are discarded (presets here are stored by tinyctl).
+- It lists the Tiny 3 as `3564:fef8`; on the hardware tested for this project
+  `fef8` is the Tiny 2 and `ff02` the Tiny 3.
+
+### On-camera presets and power-on position
+
+> **Power-on write re-enabled (copy + exact readback).** `tinyctl preset
+> power-on N` writes `AI_SET_GIM_BOOT_POS` with the slot index in field 0 and
+> the slot's pose, then `AI_SET_BOOT_PRESETS_ACTIONS` with the slot's 40-byte
+> actions record unchanged, and requires `0x3884`/`0x3E84` to read back the
+> same slot, pose and bytes. **Confirmed on a Tiny 2**: after a replug the
+> camera came up at the preset's pose in its tracking mode, speed and colours.
+> Preset save/delete and the boot-pose reset stay disabled.
+>
+> **Writes disabled.** While ADD/UPDATE/DELETE and `AI_SET_GIM_BOOT_POS`
+> were being tested on a Tiny 2, the camera began zeroing contrast,
+> saturation and sharpness whenever Desk mode is on — on Windows as well, so
+> it is stored in the camera — and then stopped confirming any tracking mode.
+> lxman's own spec lists the five preset SET encoders (and the empty-payload
+> `AI_RST_GIM_BOOT_POS`) as **unaudited**: derived from disassembly, never
+> verified by readback. Only `AI_SET_GIM_BOOT_POS` (24 B) was hardware
+> confirmed there. Treat every write below as unverified and potentially
+> harmful; tinyctl refuses them. Note that uvcvideo caches those controls, so
+> `v4l2-ctl` keeps reporting the last written values while the image is grey.
+
+From [lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp) (MIT). The read
+path is documented there as verified on the Tiny 2; the write encoders are
+not. The Tiny 3 reportedly discards preset
+*writes* (brendanwelsh/obsbot-tiny3-protocol) but recalls Center-made ones.
+
+- **Read**: flat XU selector `0x0C` returns `[count, slot idx…]`; echo those
+  exact bytes back with SET_CUR to reset the cursor, then GET selector `0x0D`
+  `count` times. Entry: status u8 (`0` valid, `2` end, `3` empty store), slot
+  idx u8 (0-based), pad u16, pitch i16 and yaw i16 (1/100°), zoom u16 (1/100
+  ratio), NUL-terminated base64 name.
+- **Write** (framed V3, receiver `0x04`): ADD `0x3944` / UPDATE `0x3E04` =
+  `idx u32` + pan, tilt, roll, zoom f32 + `-1000.0` sentinel; RECALL `0x39C4`
+  = `idx u32` + four `1.0` f32; DELETE `0x3984` = `idx u32`.
+- **Recall on Linux** leaves uvcvideo's cached pan/tilt stale; tinyctl also
+  writes the slot's pan/tilt through UVC.
+- **Power-on position**: `AI_SET_GIM_BOOT_POS` `0x3844` = six f32
+  `[0, yaw, pitch, roll, zoom, 0]` (exactly 24 bytes — 20 is silently
+  discarded); `AI_GET_GIM_BOOT_POS` `0x3884` (header-only GET) reads it back;
+  `AI_RST_GIM_BOOT_POS` `0x38C4` restores the factory pose. lxman confirmed it
+  by write → physical replug. It is one pose, not a link to a slot.
+- **Per-preset "Additional settings"** (OBSBOT Center: AI mode, tracking,
+  image…) are probably the **actions** records: `AI_GET_PRESETS_ACTIONS`
+  `0x3DC4` / `AI_SET_PRESETS_ACTIONS` `0x3D84`, and for the power-on state
+  `AI_GET_BOOT_PRESETS_ACTIONS` `0x3E84` / `AI_SET_BOOT_PRESETS_ACTIONS`
+  `0x3E44`. The selector-13 preset entry holds only pose + name.
+- **What went wrong here:** tinyctl's "update" used `0x3E04`, whose firmware
+  name is `AI_SET_PRESET_UPDATE_ONLY` and sits among the actions commands — the
+  plain pose update is `AI_SET_GIMBAL_PRESET_UPDATE` `0x3A04`. After one
+  `0x3E04` write the Tiny 2 had hue, contrast, saturation and sharpness at 0
+  in Desk mode and stopped confirming tracking; rebuilding the presets and
+  initial state in OBSBOT Center fixed it. Do not send `0x3E04`.
+- **Actions record layout** (40 bytes, same for each preset via `0x3DC4`
+  with a `u32` slot index in a `0x21` GET, and for power-on via `0x3E84`).
+  Decoded on a Tiny 2 by setting distinct values in OBSBOT Center:
+
+  | Byte | Field | Values seen |
+  |---|---|---|
+  | 0 | AI mode | `ff` none, `00` normal, `01` upper, `05` desk, `06` whiteboard, `09` group (`02`–`04` inferred: close-up, headless, lower). Hand is not offered for presets |
+  | 1 | tracking speed | `00` standard, `01` motion |
+  | 2 / 3 | auto focus on / focus target | `01` / `00` global, `01` face |
+  | 6 / 7 | auto exposure on / exposure target | `01` / `00` global, `01` face |
+  | 8 | exposure compensation | index, 9 = 0, +3 per EV step (12 = +1) |
+  | 13 | white balance | `00` auto, `05` manual |
+  | 14–15 | WB temperature u16 | e.g. `0x1130` = 4400 |
+  | 17 / 19 | background blur on / level | `00`/`01`, level 1–8 |
+  | 20–23 | contrast, saturation, sharpness, hue | 0–100 each |
+
+  `ff` (or `80` at byte 8) = "not set"; Center writes these when a control is
+  set to off. Bytes 4–5, 9–12, 16 and 18 are constant so far. The camera
+  applies the **power-on** copy at boot (colour and tracking), but a preset
+  **recall** (`0x39C4`) only moves — OBSBOT Center applies the rest itself,
+  and so does `tinyctl preset recall`. The power-on record is a copy made by
+  "As Initial State"; editing the preset afterwards does not change it. The
+  first field of `AI_GET_GIM_BOOT_POS` is the 0-based slot it was copied from.
+- **Boot actions record, first decode** (Tiny 2, 40 bytes via `0x3E84`). Unset:
+  `fe ff ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00…`. After Center's "As
+  Initial State" with Desk mode at tilt 30°:
+  `05 ff 01 00 10 00 01 00 0c 32 00 40 00 00 b8 0b 00 00 00 00 ff ff ff ff 00…`.
+  Byte 0 = `05` = Desk (the Tiny 2 AI category); bytes 14–15 = `0x0bb8` =
+  3000 = tilt 30.00° in hundredths. The rest is not yet decoded.
+- **Tiny 3 differs** (one preset saved, read-only dumps):
+  - `AI_GET_GIM_BOOT_POS` returns **38 bytes**: `u32` slot index, one pad
+    byte, then *unaligned* f32 yaw, pitch, roll, zoom, then four more f32
+    (`0.5, 0.5, 1.0, 1.0` — possibly a framing rectangle) and a pad byte.
+    Example: `00 00 00 00 | 00 | e2 7a fc c0 (−7.89) | 67 66 46 40 (3.10) |
+    0 | 1.0 | 0.5 | 0.5 | 1.0 | 1.0 | 00`.
+  - The 40-byte actions record has a different layout, e.g.
+    `0b 05 01 01 00 00 01 01 09 4a 01 01 00 00 48 0d 00 00 00 00 ff ff ff ff
+    00 ff 00 80 00 80 00 1c 1c ff…` (`0x0d48` = 3400 at 14–15, likely WB).
+    The power-on copy equals preset 1's, so "As Initial State" copies here too.
+  - Flat selector `0x0C` gives no usable list, and slots without a preset do
+    not answer `0x3DC4`. tinyctl refuses preset commands on the Tiny 3
+    family until these are decoded; `probe boot` dumps them.
+- **Tiny 3 actions record, decode from three Center presets** (40 bytes via
+  `0x3DC4`; the power-on copy equals the "As Initial State" preset's):
+
+  | Byte(s) | Field | P1 | P2 | P3 | Notes |
+  |---|---|---|---|---|---|
+  | 0 | human tracking | `ff` | `ff` | `ff` | `0b` single, `0c` group, `ff` disabled (round 2) |
+  | 1 | tracking speed | `06` | `05` | `07` | `05` slow, `06` medium, `07` fast (round 2: all slow = `05`) |
+  | 2 / 3 | auto focus / AF mode | `01`/`01` | `01`/`00` | `00`/`01` | on/off; `01` face, `00` global |
+  | 4–5 | manual focus u16 | 0 | 0 | 52 | slider ~50% |
+  | 6 / 7 | auto exposure / AE mode | `01`/`01` | `01`/`00` | `00`/`01` | same as Tiny 2 |
+  | 8 | AE compensation | `09` | `0c` | `09` | same as Tiny 2 (9 = 0, +3 per EV) |
+  | 9 | shutter? | `32` | `32` | `1f` | P3 1/320 — likely an index |
+  | 11 | ISO / 100 | `01` | `01` | `16` | P3 ISO 2200 |
+  | 13 | WB mode | `00` | `00` | `05` | `05` manual |
+  | 14–15 | WB temp u16 | 4000 | 4000 | 4000 | P3 4000K |
+  | 16 | image adjust present | `01` | `01` | `00` | P3 has no image values |
+  | 17 / 19 | blur on / level | `01`/`02` | `00`/`02` | `00`/`00` | |
+  | 20–23 | contrast, sat, sharp, hue | 46 47 48 49 | 36 37 38 39 | `ff`×4 | |
+  | 24 | auto zoom | `00` | `00` | `01` | `00` off, `01` full body (other framings not seen) |
+  | 25 | AI mode | `02` | `00` | `02` | `00` desk, `01` whiteboard, `02` voice, `ff` disabled |
+  | 27, 29 | constant | `8d`, `a2` | | | |
+  | 31 / 32 | AWB shift B-A / G-M | `26`/`2b` | `18`/`10` | `1c`/`1c` | value = (byte − 28) / 4: 2.5/3.75, −1/−3, 0/0 |
+  | 33 / 34 | ISO range lower / upper | `ff`/`ff` | `02`/`07` | `ff`/`ff` | index 1 = 100 … 8 = 12800 (P2 200–6400); `ff` = full range |
+
+  Human tracking and AI mode exclude each other in OBSBOT Center: in round 1
+  P1 and P3 asked for both, and voice won (byte 0 `ff`). Round 2 (single /
+  group / whiteboard, slow, auto zoom off, everything else unset) separated
+  bytes 0, 1, 24 and 25. Controls a preset leaves unset are stored as `ff`.
+  `tinyctl preset recall` on the Tiny 3 applies human tracking (single →
+  normal, group), desk, whiteboard, focus, exposure, WB and the image values;
+  voice, tracking speed, auto zoom, ISO and WB shift have no USB command.
+- **Tiny 3 boot pose** (38 bytes, P2 as initial state):
+  `01 00 00 00 | 00 | −4.58 | −3.10 | 0 | 1.66 | 0.5 | 0.5 | 0.6024 | 1.0 | 00`
+  — slot index, pad, unaligned f32 yaw, pitch, roll, zoom, then what looks
+  like a crop window: centre 0.5/0.5 and width 0.6024 = 1/1.66.
+- **Tiny 3 preset poses are not readable** by any path tried: flat selector
+  `0x0C` is all zeros and the framed list/value/name GETs (`0x3B44`, `0x3A44`,
+  `0x3B04`) do not answer. Only the actions records (and the power-on pose)
+  are.
+- Replies: flags `0x09` is an ACK with no payload (stale bytes follow), `0x89`
+  an error with the code at bytes 14–15; both are handled by `frame::parse`.
+
+Identification with several cameras:
+
+- These cameras publish **no USB iSerial**, so `/dev/v4l/by-id` names carry no
+  serial and two identical models collide (`…OBSBOT_Tiny_2-video-index0`).
+  `by-path` names are unique but tied to the port.
+- Discovery therefore walks sysfs (`/sys/class/video4linux/*/index == 0` whose
+  USB ancestor has `idVendor == 3564`), and the stable id is the 14-character
+  vendor serial from `UG_GET_SN` (below), which can be read without waking a
+  sleeping camera. It is cached per USB port + devnum, so each camera is opened
+  for it at most once per plug-in.
 
 ## USB interface topology
 
@@ -117,7 +310,7 @@ against this camera — treat as unverified:
 | Gimbal move-to-angle | `0x25` | `0x6444` | `0x04` | roll, pitch, yaw — 3× float32 LE (motor degrees) |
 | Tracking speed | `0x25` | `0x0CC4` | `0x04` | `00` standard / `02` sport |
 
-Absolute pan/tilt via the standard UVC controls (`t3ctl pan`/`tilt`) is the
+Absolute pan/tilt via the standard UVC controls (`tinyctl pan`/`tilt`) is the
 verified path for positioning; `gimbal_move` is kept only as a documented
 alternative.
 
@@ -167,7 +360,7 @@ tool is safe to run against a sleeping camera; only capture wakes it.
 `pan_absolute`/`tilt_absolute` returns the last value the *driver* wrote, not a
 live hardware read (uvcvideo caches controls lacking the AUTO_UPDATE quirk). So
 after a vendor recenter frame (`0x00C3`), the gimbal physically centers but the
-UVC readback still reports the old angle. `t3ctl` implements recenter as UVC
+UVC readback still reports the old angle. `tinyctl` implements recenter as UVC
 `pan=0`/`tilt=0` instead, which both moves the gimbal and keeps readback honest.
 
 **ioctl-number gotcha (cost real time here):** `VIDIOC_G_CTRL`/`S_CTRL` are
@@ -189,7 +382,10 @@ Live blob observed: `2e0100020000000100 01 78 0000 01 01 …`. Decoded offsets
 | `0x06` | HDR (bool) | ✅ reacts to the HDR TLV |
 | `0x18` | AI mode enable | ✅ `00` idle → `02` when human-tracking on |
 | `0x1c` | AI framing | ✅ tracks the submode |
-| `0x21` | tracking speed (0=std, 2=sport) | ⚠️ not exercised — `set_track_speed` is experimental |
+| `0x07` | face-priority AE (0 global, 1 face) | ✅ Tiny 2 + Tiny 3 (`tinyctl probe face-ae`) |
+| `0x11` | field of view (0 wide, 1 medium, 2 narrow) | ✅ Tiny 2 + Tiny 3 (`tinyctl probe fov`). Byte `0x04` also moves with FOV (`00/06/0f` Tiny 3, `00/05/0f` Tiny 2) — likely the crop amount |
+| `0x21` | tracking speed (0=std, 2=sport) — Tiny 2 lineage notes | ⚠️ **wrong on Tiny 2** (it reports at `0x24`); unexercised on Tiny 3 Lite |
+| `0x24` | tracking speed on the **Tiny 2** (0=std, 2=sport) | ✅ Tiny 2 (`tinyctl probe track-speed`). The Tiny 3 accepts the speed frame but no status byte follows it and no visible change was seen, so it is treated as unsupported there |
 
 **Reading the status block does not wake the camera.** It is a control GET, not
 a stream, so it can be read on a *sleeping* camera and leaves it asleep
@@ -256,7 +452,7 @@ broken** — never trust readback alone; verify with a captured frame.
 gimbal live) — ffmpeg, a browser, any `VIDIOC_STREAMON`. But merely opening the
 node for **control** ioctls (`VIDIOC_G_CTRL`, XU GET/SET, framed vendor GETs)
 does **not** wake a sleeping camera — those reads work while it sleeps and leave
-it asleep. So `t3ctl status`/`info` are safe on a sleeping camera; only capture
+it asleep. So `tinyctl status`/`info` are safe on a sleeping camera; only capture
 wakes it. Idle *monitoring* still must hold **no** fd so USB autosuspend can
 engage — inotify on the node works (it doesn't open the device).
 
@@ -322,7 +518,7 @@ in such a room. Keep target temperature configurable.
 | 2026-08-31 | UVC pan 20°/tilt 10°/zoom 60 | ✅ frame-verified gimbal moved; readback matched |
 | 2026-08-31 | recenter via UVC pan=0/tilt=0 | ✅ frame-verified centered; readback honest (vendor 0x00C3 desyncs the cache) |
 | 2026-08-31 | WB manual 4000K pin (auto=0, pause, temp last) | ✅ clean image, red/blue stayed 127, no neon-green |
-| 2026-08-31 | AI track normal/upper, HDR on/off via t3ctl | ✅ status round-trip confirms each |
-| 2026-08-31 | t3-wb-guard integration | ✅ zero-fd idle (camera suspends), re-pins WB within ~4s of an app flipping it to auto |
+| 2026-08-31 | AI track normal/upper, HDR on/off via tinyctl | ✅ status round-trip confirms each |
+| 2026-08-31 | tiny-guard integration | ✅ zero-fd idle (camera suspends), re-pins WB within ~4s of an app flipping it to auto |
 | 2026-08-31 | FOV wide vs narrow TLV `04 01 00`/`04 01 02` | ✅ frame-verified: narrow is a visibly tighter crop than wide |
 | 2026-08-31 | Status GET ×4 on a sleeping camera | ✅ stayed `sleep=1` across ~6 s; control reads don't wake it |

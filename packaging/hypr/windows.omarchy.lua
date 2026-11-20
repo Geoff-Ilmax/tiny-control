@@ -1,6 +1,6 @@
--- OBSBOT Tiny 3 live-preview window rule for Omarchy (Hyprland-in-Lua).
+-- tiny-control live-preview window rule for Omarchy (Hyprland-in-Lua).
 --
--- The `t3-preview` script launches mpv with --wayland-app-id=obsbot-tiny3-preview.
+-- The `tiny-preview` script launches mpv with --wayland-app-id=tiny-control-preview.
 -- This rule floats it as a small, pinned, corner self-view (bottom-right, 40px
 -- inset), scaled from monitor height so it takes the same share of any display.
 --
@@ -9,7 +9,7 @@
 -- to ~/.config/hypr/hyprland.lua (after the other require lines). Omarchy
 -- auto-reloads on save; validate with `hyprctl reload && hyprctl configerrors`.
 
-o.window({ class = "^obsbot-tiny3-preview$" }, {
+o.window({ class = "^tiny-control-preview$" }, {
   float = true,
   pin = true,
   no_initial_focus = true,

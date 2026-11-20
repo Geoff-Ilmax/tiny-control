@@ -4,7 +4,7 @@ After=pipewire.service wireplumber.service
 Requires=pipewire.service
 
 [Service]
-ExecStart=/usr/bin/pipewire -c %h/.config/obsbot-tiny3/obsbot-audio.conf
+ExecStart=/usr/bin/pipewire -c %h/.config/tiny-control/tiny-audio.conf
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

@@ -1,12 +1,12 @@
 [package]
-name = "obsbot-tiny3"
-version = "0.1.0"
+name = "tiny-control"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
-description = "Linux control suite for the OBSBOT Tiny 3 series webcam (sleep/wake, AI tracking, gimbal, white balance)"
-authors = ["Josh Lambert"]
+description = "Linux control suite for OBSBOT Tiny 2 and Tiny 3 series webcams, with multi-camera support (sleep/wake, AI tracking, gimbal, white balance)"
+authors = ["Josh Lambert", "Geoff-Ilmax"]
 license = "MIT"
-repository = "https://github.com/joshualambert/obsbot-tiny3-linux"
+repository = "https://github.com/Geoff-Ilmax/tiny-control"
 readme = "README.md"
 keywords = ["obsbot", "webcam", "uvc", "v4l2", "ptz"]
 categories = ["command-line-utilities", "hardware-support"]
@@ -17,16 +17,16 @@ categories = ["command-line-utilities", "hardware-support"]
 libc = "0.2"
 
 [lib]
-name = "obsbot_tiny3"
+name = "tiny_control"
 path = "src/lib.rs"
 
 [[bin]]
-name = "t3ctl"
-path = "src/bin/t3ctl.rs"
+name = "tinyctl"
+path = "src/bin/tinyctl.rs"
 
 [[bin]]
-name = "t3-wb-guard"
-path = "src/bin/t3_wb_guard.rs"
+name = "tiny-guard"
+path = "src/bin/tiny_guard.rs"
 
 [profile.release]
 strip = true

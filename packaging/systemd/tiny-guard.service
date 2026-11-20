@@ -1,11 +1,11 @@
 [Unit]
-Description=OBSBOT Tiny 3 settings and call guard
-Documentation=https://github.com/joshualambert/obsbot-tiny3-linux
+Description=tiny-control camera settings and call guard (all cameras)
+Documentation=https://github.com/Geoff-Ilmax/tiny-control
 # The device may not exist yet at login; the guard polls for it, so no hard dep.
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/t3-wb-guard
+ExecStart=/usr/bin/tiny-guard
 Restart=always
 RestartSec=5
 # Light hardening only. NoNewPrivileges is always safe. The mount-namespace

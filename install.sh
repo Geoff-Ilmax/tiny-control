@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local (non-AUR) installer for obsbot-tiny3-linux.
+# Local (non-AUR) installer for tiny-control.
 #
 # Installs the binaries, a per-user systemd unit, and a default config into the
 # user's home — NO sudo required. The udev rule and system config need root and
@@ -25,23 +25,23 @@ UNITDIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 # Two shapes of source tree land here: a published release tarball, which ships
 # the binaries prebuilt next to this script, and a git clone, which does not.
-if [[ -x "$REPO/t3ctl" && -x "$REPO/t3-wb-guard" ]]; then
+if [[ -x "$REPO/tinyctl" && -x "$REPO/tiny-guard" ]]; then
     echo "==> using the prebuilt binaries shipped in this release archive"
-    T3CTL="$REPO/t3ctl"
-    WB_GUARD="$REPO/t3-wb-guard"
+    TINYCTL="$REPO/tinyctl"
+    WB_GUARD="$REPO/tiny-guard"
 else
     echo "==> building release binaries"
     ( cd "$REPO" && cargo build --release --locked )
-    T3CTL="$REPO/target/release/t3ctl"
-    WB_GUARD="$REPO/target/release/t3-wb-guard"
+    TINYCTL="$REPO/target/release/tinyctl"
+    WB_GUARD="$REPO/target/release/tiny-guard"
 fi
 
 echo "==> installing binaries to $BINDIR"
-install -Dm755 "$T3CTL" "$BINDIR/t3ctl.new"
-mv -f "$BINDIR/t3ctl.new" "$BINDIR/t3ctl"
-install -Dm755 "$WB_GUARD" "$BINDIR/t3-wb-guard.new"
-mv -f "$BINDIR/t3-wb-guard.new" "$BINDIR/t3-wb-guard"
-install -Dm755 "$REPO/bin/t3-preview" "$BINDIR/t3-preview"
+install -Dm755 "$TINYCTL" "$BINDIR/tinyctl.new"
+mv -f "$BINDIR/tinyctl.new" "$BINDIR/tinyctl"
+install -Dm755 "$WB_GUARD" "$BINDIR/tiny-guard.new"
+mv -f "$BINDIR/tiny-guard.new" "$BINDIR/tiny-guard"
+install -Dm755 "$REPO/bin/tiny-preview" "$BINDIR/tiny-preview"
 
 # The Omarchy bar widget is intentionally NOT installed here — this installer is
 # a cross-platform CLI/daemon install (works fine on Ubuntu, Debian, etc.). The
@@ -49,20 +49,29 @@ install -Dm755 "$REPO/bin/t3-preview" "$BINDIR/t3-preview"
 # detected. See the end of this script.
 
 # No config is seeded here: the guard defaults to 4000K, and the system-wide
-# default lives at /etc/obsbot-tiny3/config (installed by install-root.sh). Only
-# create ~/.config/obsbot-tiny3/config yourself to override the temperature.
+# default lives at /etc/tiny-control/config (installed by install-root.sh). Only
+# create ~/.config/tiny-control/config yourself to override the temperature.
+
+# The upstream obsbot-tiny3-linux guard manages the same cameras; two guards
+# would fight over them. Stop it (its files are left for you to remove).
+if systemctl --user list-unit-files t3-wb-guard.service 2>/dev/null | grep -q t3-wb-guard; then
+    echo "==> disabling the old t3-wb-guard.service (obsbot-tiny3-linux) so it does not fight tiny-guard"
+    systemctl --user disable --now t3-wb-guard.service || true
+    echo "    remove the old tools when ready: ~/.local/bin/{t3ctl,t3-wb-guard,t3-preview}," 
+    echo "    ~/.config/systemd/user/t3-wb-guard.service, /etc/udev/rules.d/71-obsbot-tiny3.rules"
+fi
 
 echo "==> installing systemd user unit"
 mkdir -p "$UNITDIR"
 # Generate the unit with an absolute ExecStart matching this prefix.
-cat > "$UNITDIR/t3-wb-guard.service" <<EOF
+cat > "$UNITDIR/tiny-guard.service" <<EOF
 [Unit]
-Description=OBSBOT Tiny 3 settings and call guard
-Documentation=https://github.com/joshualambert/obsbot-tiny3-linux
+Description=tiny-control camera settings and call guard (all cameras)
+Documentation=https://github.com/Geoff-Ilmax/tiny-control
 
 [Service]
 Type=simple
-ExecStart=${BINDIR}/t3-wb-guard
+ExecStart=${BINDIR}/tiny-guard
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -71,13 +80,13 @@ NoNewPrivileges=true
 WantedBy=default.target
 EOF
 
-echo "==> enabling t3-wb-guard.service"
+echo "==> enabling tiny-guard.service"
 systemctl --user daemon-reload
-systemctl --user enable t3-wb-guard.service
-systemctl --user restart t3-wb-guard.service
+systemctl --user enable tiny-guard.service
+systemctl --user restart tiny-guard.service
 
 echo
-echo "Done. t3ctl and t3-wb-guard installed to $BINDIR"
+echo "Done. tinyctl and tiny-guard installed to $BINDIR"
 echo "Next (root, one-time) for the udev rule + cold-plug WB pin:"
 echo "    sudo $REPO/packaging/install-root.sh"
 echo "Make sure $BINDIR is on your PATH."
@@ -88,15 +97,15 @@ if command -v omarchy >/dev/null 2>&1 || [[ -d "$HOME/.config/omarchy" ]]; then
 
 Omarchy detected. Optional add-ons (not installed automatically):
   • Bar widget — a separate plugin repo / marketplace listing:
-        omarchy plugin install io.github.joshualambert.obsbot-tiny3   # once listed
-        https://github.com/joshualambert/omarchy-obsbot-tiny3         # manual install
+        omarchy plugin install io.github.geoff-ilmax.tiny-control   # once listed
+        https://github.com/Geoff-Ilmax/omarchy-tiny-control         # manual install
   • Keybindings, a Camera menu, and the preview window rule are example
     snippets in this repo's packaging/hypr/ and packaging/omarchy-menu.jsonc.
 EOF
 elif command -v hyprctl >/dev/null 2>&1 || [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
     cat <<'EOF'
 
-Hyprland detected. Example keybindings and the t3-preview float rule are in
+Hyprland detected. Example keybindings and the tiny-preview float rule are in
 this repo's packaging/hypr/ (vanilla .conf form included).
 EOF
 fi
