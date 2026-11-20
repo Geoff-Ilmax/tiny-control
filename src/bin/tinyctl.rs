@@ -1012,11 +1012,27 @@ fn apply_actions(
     }
     match a.tracking {
         Some(m) => {
-            let r = dev.set_tracking(m);
+            let r = dev.set_tracking(m).and_then(|()| {
+                // Confirm like `tinyctl track` does: the camera can take a
+                // moment, especially right after a preset move.
+                for _ in 0..10 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if dev.status()?.tracking == m {
+                        return Ok(());
+                    }
+                }
+                let seen = dev.status()?;
+                Err(Error::Config(format!(
+                    "the camera reports '{}' instead (status bytes 0x18/0x1c = {:#04x}/{:#04x})",
+                    seen.tracking.label(),
+                    seen.raw[0x18],
+                    seen.raw[0x1c]
+                )))
+            });
             if r.is_ok() {
                 config::save_setting(id, "tracking", m.label())?;
             }
-            note("tracking mode", r);
+            note(&format!("tracking {}", m.label()), r);
         }
         None if a.voice => notes.push("AI mode voice (no known command)".into()),
         None => notes.push(format!(
