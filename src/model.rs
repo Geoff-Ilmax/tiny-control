@@ -276,6 +276,10 @@ const TINY2_VERIFIED: &[Feature] = &[
     Feature::Exposure,
     Feature::FaceAe,
     Feature::TrackSpeed,
+    // On-camera preset recall (with its settings applied by tinyctl) and the
+    // power-on state copy, confirmed by readback and a replug.
+    Feature::PresetRecall,
+    Feature::PowerOnPose,
 ];
 
 pub static MODELS: &[Model] = &[
@@ -383,7 +387,7 @@ mod tests {
             ("power-on position", Support::Expected),
         ]
         .map(|(f, s)| (f.to_string(), s));
-        assert_eq!(not_verified("fef8"), presets);
+        assert_eq!(not_verified("fef8"), [presets[1].clone()]);
         assert_eq!(
             not_verified("ff02"),
             [
