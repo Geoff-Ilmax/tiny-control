@@ -49,6 +49,8 @@ INFO
     power                 USB power state from sysfs (opens nothing)
     node                  Print the capture device path (opens nothing)
     support               Which features are verified on this model (opens nothing)
+    ui [<name> on|off]    Front-end preferences kept per camera: fine_control,
+                          swap_pan, swap_tilt (used by the bar widget)
 
 AI TRACKING
     track on|off|toggle   Enable/disable tracking
@@ -270,6 +272,7 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             return Ok(());
         }
         "support" => return cmd_support(cam, json),
+        "ui" => return cmd_ui(cam, rest),
         _ => {}
     }
 
@@ -556,6 +559,50 @@ fn cmd_support(cam: &Cam, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Per-camera front-end preferences (e.g. the bar widget's gimbal pad),
+/// stored as `ui_<name>` keys in the camera's config section.
+const UI_SETTINGS: [&str; 3] = ["fine_control", "swap_pan", "swap_tilt"];
+
+fn ui_json(id: &str) -> String {
+    let file = config::ConfigFile::load();
+    let section = file.cameras.get(id);
+    let items: Vec<String> = UI_SETTINGS
+        .iter()
+        .map(|k| {
+            let on = section
+                .and_then(|m| m.get(&format!("ui_{k}")))
+                .is_some_and(|v| v == "true");
+            format!("\"{k}\":{on}")
+        })
+        .collect();
+    format!("{{{}}}", items.join(","))
+}
+
+/// `ui` prints the camera's front-end preferences as JSON; `ui <name> on|off`
+/// sets one. Touches only the config file, never the camera.
+fn cmd_ui(cam: &Cam, rest: &[String]) -> Result<()> {
+    let usage = || Error::Usage(format!("ui [{} on|off]", UI_SETTINGS.join("|")));
+    match rest {
+        [] => {
+            println!("{}", ui_json(&cam.id));
+            Ok(())
+        }
+        [name, value] => {
+            if !UI_SETTINGS.contains(&name.as_str()) {
+                return Err(usage());
+            }
+            let on = need_on_off(std::slice::from_ref(value), name)?;
+            let _lock = config::PolicyLock::acquire()?;
+            config::save_setting(
+                &cam.id,
+                &format!("ui_{name}"),
+                if on { "true" } else { "false" },
+            )
+        }
+        _ => Err(usage()),
+    }
+}
+
 fn cmd_power(cam: &Cam, json: bool) -> Result<()> {
     let state = discover::usb_power_state(&cam.info.node).unwrap_or_else(|| "unknown".into());
     if json {
@@ -609,7 +656,7 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
              \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
              \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
              \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}],\
-             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{}{}}}",
+             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{},\"ui\":{}{}}}",
             json_camera(cam),
             s.asleep,
             json_str(s.tracking.label()),
@@ -631,6 +678,7 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             json_opt(s.tracking_sport.map(|b| if b { "sport" } else { "std" })),
             fov_name(s.fov),
             s.face_ae,
+            ui_json(&cam.id),
             if raw {
                 format!(",\"raw\":\"{}\"", hex(&s.raw))
             } else {
