@@ -95,6 +95,23 @@ not. The Tiny 3 reportedly discards preset
   discarded); `AI_GET_GIM_BOOT_POS` `0x3884` (header-only GET) reads it back;
   `AI_RST_GIM_BOOT_POS` `0x38C4` restores the factory pose. lxman confirmed it
   by write → physical replug. It is one pose, not a link to a slot.
+- **Per-preset "Additional settings"** (OBSBOT Center: AI mode, tracking,
+  image…) are probably the **actions** records: `AI_GET_PRESETS_ACTIONS`
+  `0x3DC4` / `AI_SET_PRESETS_ACTIONS` `0x3D84`, and for the power-on state
+  `AI_GET_BOOT_PRESETS_ACTIONS` `0x3E84` / `AI_SET_BOOT_PRESETS_ACTIONS`
+  `0x3E44`. The selector-13 preset entry holds only pose + name.
+- **What went wrong here:** tinyctl's "update" used `0x3E04`, whose firmware
+  name is `AI_SET_PRESET_UPDATE_ONLY` and sits among the actions commands — the
+  plain pose update is `AI_SET_GIMBAL_PRESET_UPDATE` `0x3A04`. After one
+  `0x3E04` write the Tiny 2 had hue, contrast, saturation and sharpness at 0
+  in Desk mode and stopped confirming tracking; rebuilding the presets and
+  initial state in OBSBOT Center fixed it. Do not send `0x3E04`.
+- **Boot actions record, first decode** (Tiny 2, 40 bytes via `0x3E84`). Unset:
+  `fe ff ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00…`. After Center's "As
+  Initial State" with Desk mode at tilt 30°:
+  `05 ff 01 00 10 00 01 00 0c 32 00 40 00 00 b8 0b 00 00 00 00 ff ff ff ff 00…`.
+  Byte 0 = `05` = Desk (the Tiny 2 AI category); bytes 14–15 = `0x0bb8` =
+  3000 = tilt 30.00° in hundredths. The rest is not yet decoded.
 - Replies: flags `0x09` is an ACK with no payload (stale bytes follow), `0x89`
   an error with the code at bytes 14–15; both are handled by `frame::parse`.
 

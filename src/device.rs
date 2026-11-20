@@ -361,8 +361,25 @@ impl Device {
     /// match. The mailbox retains the previous reply, so matching both is
     /// required; latency exceeds a fixed sleep, so we poll.
     fn transact_get(&self, receiver: u8, cmd: u16, what: &'static str) -> Result<frame::Reply> {
+        self.transact_get_with(receiver, cmd, &[], what)
+    }
+
+    /// GET with a request payload (flags `0x21`), e.g. a slot index — the
+    /// form parameterized preset GETs require. Empty payload = header-only.
+    fn transact_get_with(
+        &self,
+        receiver: u8,
+        cmd: u16,
+        request: &[u8],
+        what: &'static str,
+    ) -> Result<frame::Reply> {
         let seq = next_seq();
-        let f = frame::build(FLAG_GET, seq, receiver, cmd, &[]);
+        let flags = if request.is_empty() {
+            FLAG_GET
+        } else {
+            FLAG_GET | 0x20
+        };
+        let f = frame::build(flags, seq, receiver, cmd, request);
         self.fd.xu_set(XU_UNIT, SEL_CMD, &f)?;
         for _ in 0..12 {
             std::thread::sleep(Duration::from_millis(50));
@@ -651,6 +668,31 @@ impl Device {
         ]
         .into_iter()
         .map(|(name, rcv, cmd)| (name, self.transact_get(rcv, cmd, name).map(|r| r.payload)))
+        .chain((0..PRESET_SLOTS as u32).flat_map(|idx| {
+            const ACTIONS: [&str; 3] = [
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 1",
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 2",
+                "AI_GET_PRESETS_ACTIONS 0x3DC4 slot 3",
+            ];
+            const OPA: [&str; 3] = [
+                "AI_GET_PRESET_OPA 0x1D04 slot 1",
+                "AI_GET_PRESET_OPA 0x1D04 slot 2",
+                "AI_GET_PRESET_OPA 0x1D04 slot 3",
+            ];
+            let i = idx as usize;
+            [(ACTIONS[i], 0x3DC4u16), (OPA[i], 0x1D04)].map(|(name, cmd)| {
+                (
+                    name,
+                    self.transact_get_with(RCV_AI, cmd, &idx.to_le_bytes(), name)
+                        .map(|r| r.payload),
+                )
+            })
+        }))
+        .chain(std::iter::once((
+            "AI_GET_PRESETS_ACTIONS 0x3DC4 (no slot)",
+            self.transact_get(RCV_AI, 0x3DC4, "AI_GET_PRESETS_ACTIONS")
+                .map(|r| r.payload),
+        )))
         .collect()
     }
 
