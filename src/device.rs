@@ -1194,30 +1194,6 @@ impl Device {
         Ok((i16_at(10), -i16_at(8)))
     }
 
-    /// Re-sync uvcvideo's cached pan/tilt with the real position (after a
-    /// velocity move, tracking or a preset recall) by writing the live angle
-    /// back. The gimbal moves by less than the 1° UVC resolution.
-    pub fn sync_gimbal(&self) -> Result<(f64, f64)> {
-        let (pan, tilt) = self.live_gimbal()?;
-        let pan = pan.round().clamp(
-            self.gimbal_range_deg(controls::CID_PAN_ABSOLUTE).0,
-            self.gimbal_range_deg(controls::CID_PAN_ABSOLUTE).1,
-        );
-        let tilt = tilt.round().clamp(
-            self.gimbal_range_deg(controls::CID_TILT_ABSOLUTE).0,
-            self.gimbal_range_deg(controls::CID_TILT_ABSOLUTE).1,
-        );
-        self.fd.set_ctrl(
-            controls::CID_PAN_ABSOLUTE,
-            (pan * controls::ASEC_PER_DEG) as i32,
-        )?;
-        self.fd.set_ctrl(
-            controls::CID_TILT_ABSOLUTE,
-            (tilt * controls::ASEC_PER_DEG) as i32,
-        )?;
-        Ok((pan, tilt))
-    }
-
     /// Absolute pan via the standard UVC control, within the camera's range.
     pub fn set_pan_deg(&self, deg: f64) -> Result<()> {
         self.set_angle(controls::CID_PAN_ABSOLUTE, "pan degrees", deg)

@@ -94,7 +94,7 @@ impl Motion {
         })
     }
 
-    /// Stop, then re-sync the cached position with where the gimbal is.
+    /// Stop the move.
     fn stop(self) {
         let Some(dev) = self.dev else {
             println!("move stop");
@@ -106,8 +106,9 @@ impl Motion {
                 eprintln!("tiny-remote: could not stop the gimbal: {e}");
             }
         }
-        std::thread::sleep(Duration::from_millis(150)); // let it settle
-        let _ = dev.sync_gimbal();
+        // Deliberately no position write-back here: the gimbal decelerates
+        // after the stop, so writing back an early reading made it drift
+        // back. `pan|tilt by` and `status` read the live position instead.
     }
 }
 
