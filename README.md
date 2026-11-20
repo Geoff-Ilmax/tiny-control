@@ -38,7 +38,7 @@ All share one control protocol; only the USB product ID differs.
 | Model | USB ID | Status |
 |---|---|---|
 | OBSBOT Tiny 3 Lite | `3564:ff04` | ✅ **Verified** upstream on real hardware (firmware 0510); framing modes treated as unsupported, like the Tiny 3 |
-| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: every command, except tracking speed and the upper/close/headless/lower framing modes (not supported on this model). Presets: list + recall (untested); power-on via OBSBOT Center |
+| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: every command, except tracking speed and the upper/close/headless/lower framing modes (not supported on this model). Presets: list + recall verified; power-on via OBSBOT Center |
 | OBSBOT Tiny 2 | `3564:fef8` | ✅ **Verified**: every command |
 | Other OBSBOT (`3564:*`) | | ⚠️ Detected as "unrecognized model", every feature treated as untested |
 

@@ -669,7 +669,13 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             "exposure    : {}",
             if s.auto_exposure { "auto" } else { "manual" }
         );
-        println!("fov         : {}", fov_name(s.fov));
+        match fov_name(s.fov) {
+            "unknown" => println!(
+                "fov         : other ({:#04x}; seen after a preset recall on the Tiny 3)",
+                s.fov
+            ),
+            name => println!("fov         : {name}"),
+        }
         println!("face AE     : {}", onoff(s.face_ae));
         println!(
             "gimbal      : pan {:.1}° ({pan_min:.0}..{pan_max:.0}), tilt {:.1}° ({tilt_min:.0}..{tilt_max:.0}), zoom {}",

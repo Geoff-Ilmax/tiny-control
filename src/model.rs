@@ -214,24 +214,6 @@ const TINY3_LITE_VERIFIED: &[Feature] = &[
     Feature::Hdr,
 ];
 
-/// Features confirmed on the Tiny 3 (ff02) and Tiny 2 (fef8) on real
-/// hardware: sleep, wake, power, status, info, track, pan, tilt, zoom, wb,
-/// hdr, fov, exposure and the firmware auto-sleep timer. Face-AE is confirmed
-/// by status readback (byte 0x07) on both.
-/// (power/status/info are reads and need no feature gate.)
-const TINY3_TINY2_VERIFIED: &[Feature] = &[
-    Feature::Sleep,
-    Feature::AutoSleepTimer,
-    Feature::Tracking(TrackMode::Off),
-    Feature::Gimbal,
-    Feature::Zoom,
-    Feature::WhiteBalance,
-    Feature::Hdr,
-    Feature::Fov,
-    Feature::Exposure,
-    Feature::FaceAe,
-];
-
 /// Framing sub-modes that the Tiny 3 generation accepts (and even echoes in
 /// status) but does not act on: there they are Auto Zoom options, which only
 /// OBSBOT Center can set. Confirmed visually on a Tiny 3; group, hand,
@@ -261,6 +243,23 @@ const TINY3_LITE_UNSUPPORTED: &[Feature] = &[
     TINY3_FRAMING_MODES[1],
     TINY3_FRAMING_MODES[2],
     TINY3_FRAMING_MODES[3],
+];
+
+/// The Tiny 3 also recalls on-camera presets (settings applied by tinyctl,
+/// tracking confirmed on hardware). Its power-on copy is not possible here:
+/// it does not report preset positions.
+const TINY3_VERIFIED: &[Feature] = &[
+    Feature::Sleep,
+    Feature::AutoSleepTimer,
+    Feature::Tracking(TrackMode::Off),
+    Feature::Gimbal,
+    Feature::Zoom,
+    Feature::WhiteBalance,
+    Feature::Hdr,
+    Feature::Fov,
+    Feature::Exposure,
+    Feature::FaceAe,
+    Feature::PresetRecall,
 ];
 
 /// The Tiny 2 also reports tracking speed (status byte 0x24 follows std/sport).
@@ -298,7 +297,7 @@ pub static MODELS: &[Model] = &[
         name: "OBSBOT Tiny 3",
         pid: "ff02",
         family: Family::Tiny3,
-        verified: TINY3_TINY2_VERIFIED,
+        verified: TINY3_VERIFIED,
         unsupported: TINY3_UNSUPPORTED,
         track_speed_offset: None,
     },
@@ -399,7 +398,7 @@ mod tests {
             ]
             .map(|f| (f.to_string(), Support::Unsupported))
             .into_iter()
-            .chain(presets.clone())
+            .chain(presets[1..].iter().cloned())
             .collect::<Vec<_>>()
         );
         let t3 = by_pid("ff02");
