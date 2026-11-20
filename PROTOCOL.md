@@ -67,13 +67,17 @@ that matter here:
 > **Writes disabled.** While ADD/UPDATE/DELETE and `AI_SET_GIM_BOOT_POS`
 > were being tested on a Tiny 2, the camera began zeroing contrast,
 > saturation and sharpness whenever Desk mode is on — on Windows as well, so
-> it is stored in the camera. The cause is not yet known; tinyctl refuses
-> these writes until it is. Note that uvcvideo caches those controls, so
+> it is stored in the camera — and then stopped confirming any tracking mode.
+> lxman's own spec lists the five preset SET encoders (and the empty-payload
+> `AI_RST_GIM_BOOT_POS`) as **unaudited**: derived from disassembly, never
+> verified by readback. Only `AI_SET_GIM_BOOT_POS` (24 B) was hardware
+> confirmed there. Treat every write below as unverified and potentially
+> harmful; tinyctl refuses them. Note that uvcvideo caches those controls, so
 > `v4l2-ctl` keeps reporting the last written values while the image is grey.
 
-Decoded by [lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp) (MIT) on the
-Tiny 2; implemented here in `Device::presets` and friends, **not yet
-hardware-confirmed by this project**. The Tiny 3 reportedly discards preset
+From [lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp) (MIT). The read
+path is documented there as verified on the Tiny 2; the write encoders are
+not. The Tiny 3 reportedly discards preset
 *writes* (brendanwelsh/obsbot-tiny3-protocol) but recalls Center-made ones.
 
 - **Read**: flat XU selector `0x0C` returns `[count, slot idx…]`; echo those
