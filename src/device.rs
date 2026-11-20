@@ -40,6 +40,8 @@ const CMD_PRESET_UPDATE: u16 = 0x3E04;
 const CMD_BOOT_POS_SET: u16 = 0x3844;
 const CMD_BOOT_POS_GET: u16 = 0x3884;
 const CMD_BOOT_POS_RST: u16 = 0x38C4;
+const CMD_PRESET_ACTIONS_GET: u16 = 0x3DC4;
+const CMD_BOOT_ACTIONS_GET: u16 = 0x3E84;
 // Flat (non-framed) XU selectors that expose the preset store.
 const SEL_PRESET_LIST: u8 = 0x0C;
 const SEL_PRESET_ENTRY: u8 = 0x0D;
@@ -214,6 +216,95 @@ pub struct PresetSlot {
     /// None when the slot is empty.
     pub pose: Option<Pose>,
     pub name: Option<String>,
+}
+
+/// A preset's "Additional settings" from OBSBOT Center, as the camera stores
+/// them (40-byte actions record, `AI_GET_PRESETS_ACTIONS` 0x3DC4). The camera
+/// applies the power-on copy itself at boot, but NOT a preset's on recall —
+/// tinyctl applies those. `None` = "not set" in the record (0xff / 0x80).
+/// Decoded on a Tiny 2 against known OBSBOT Center settings; see PROTOCOL.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetActions {
+    /// Some(Off) = tracking enabled with no mode selected (0xff).
+    pub tracking: Option<TrackMode>,
+    /// The raw mode byte, for modes not mapped yet.
+    pub tracking_raw: u8,
+    /// Center's "Motion" speed = sport.
+    pub sport: Option<bool>,
+    pub auto_focus: Option<bool>,
+    /// Focus target: true = face, false = global.
+    pub face_focus: Option<bool>,
+    pub auto_exposure: Option<bool>,
+    /// Exposure target: true = face, false = global.
+    pub face_ae: Option<bool>,
+    /// Exposure compensation in thirds of a stop (index 9 = 0).
+    pub exposure_comp_thirds: Option<i8>,
+    pub auto_wb: Option<bool>,
+    pub wb_temp: Option<i32>,
+    pub blur: Option<bool>,
+    pub blur_level: Option<u8>,
+    pub contrast: Option<u8>,
+    pub saturation: Option<u8>,
+    pub sharpness: Option<u8>,
+    pub hue: Option<u8>,
+    pub raw: [u8; 40],
+}
+
+/// Tracking-mode byte of an actions record. Observed in OBSBOT Center
+/// presets: ff none, 00 normal, 01 upper, 05 desk, 06 whiteboard, 09 group.
+/// 02-04 (close-up, headless, lower) follow the framing order and are
+/// inferred, not observed.
+fn actions_track_mode(b: u8) -> Option<TrackMode> {
+    Some(match b {
+        0xff => TrackMode::Off,
+        0 => TrackMode::Normal,
+        1 => TrackMode::UpperBody,
+        2 => TrackMode::CloseUp,
+        3 => TrackMode::Headless,
+        4 => TrackMode::LowerBody,
+        5 => TrackMode::Desk,
+        6 => TrackMode::Whiteboard,
+        9 => TrackMode::Group,
+        _ => return None,
+    })
+}
+
+impl PresetActions {
+    pub fn decode(r: &[u8]) -> Option<PresetActions> {
+        let raw: [u8; 40] = r.get(..40)?.try_into().ok()?;
+        let flag = |b: u8| match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        let pct = |b: u8| (b <= 100).then_some(b);
+        let temp = u16::from_le_bytes([raw[14], raw[15]]);
+        Some(PresetActions {
+            tracking: actions_track_mode(raw[0]),
+            tracking_raw: raw[0],
+            sport: flag(raw[1]),
+            auto_focus: flag(raw[2]),
+            face_focus: flag(raw[3]),
+            auto_exposure: flag(raw[6]),
+            face_ae: flag(raw[7]),
+            exposure_comp_thirds: (raw[8] != 0x80 && raw[8] <= 18).then(|| raw[8] as i8 - 9),
+            auto_wb: match raw[13] {
+                0 => Some(true),
+                0xff => None,
+                _ => Some(false),
+            },
+            wb_temp: (raw[13] != 0xff
+                && (controls::WB_TEMP_MIN..=controls::WB_TEMP_MAX).contains(&(temp as i32)))
+            .then_some(temp as i32),
+            blur: flag(raw[17]),
+            blur_level: (raw[19] != 0xff).then_some(raw[19]),
+            contrast: pct(raw[20]),
+            saturation: pct(raw[21]),
+            sharpness: pct(raw[22]),
+            hue: pct(raw[23]),
+            raw,
+        })
+    }
 }
 
 /// Decode a flat selector-13 preset entry. Layout (60 bytes): status u8
@@ -622,6 +713,42 @@ impl Device {
         Err(self.model.unconfirmed(Feature::PresetSave))
     }
 
+    /// A preset slot's stored "Additional settings" (read-only GET with the
+    /// slot index).
+    pub fn preset_actions(&self, slot: u8) -> Result<PresetActions> {
+        self.model.require(Feature::PresetRecall)?;
+        let idx = check_slot(slot)?;
+        let r = self.transact_get_with(
+            RCV_AI,
+            CMD_PRESET_ACTIONS_GET,
+            &idx.to_le_bytes(),
+            "preset settings",
+        )?;
+        PresetActions::decode(&r.payload).ok_or(Error::NoReply("preset settings"))
+    }
+
+    /// The power-on settings (a copy taken when OBSBOT Center sets a preset
+    /// "As Initial State"; the camera applies it at boot).
+    pub fn boot_actions(&self) -> Result<PresetActions> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_ACTIONS_GET, "power-on settings")?;
+        PresetActions::decode(&r.payload).ok_or(Error::NoReply("power-on settings"))
+    }
+
+    /// Which slot the power-on position was copied from (first field of the
+    /// boot-pose record, 0-based), if it holds a slot index.
+    pub fn boot_slot(&self) -> Result<Option<u8>> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
+        let idx = r
+            .payload
+            .get(..4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        Ok(idx
+            .filter(|&i| i < PRESET_SLOTS as u32)
+            .map(|i| i as u8 + 1))
+    }
+
     /// The pose the camera moves to when it powers on.
     pub fn boot_pose(&self) -> Result<Pose> {
         self.model.require(Feature::PowerOnPose)?;
@@ -949,6 +1076,64 @@ fn decode_auto_sleep(status: &[u8; 60]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hexbytes(s: &str) -> Vec<u8> {
+        s.split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// Real Tiny 2 records, captured against settings entered in OBSBOT Center.
+    #[test]
+    fn preset_actions_decode_matches_obsbot_center() {
+        let pad = " 00".repeat(16);
+        // Preset 1: Normal, Standard, AF on/global, AE on/global, comp +1,
+        // WB auto, blur off, contrast/sat/sharp/hue 47/48/49/40.
+        let a = PresetActions::decode(&hexbytes(&format!(
+            "00 00 01 00 10 00 01 00 0c 32 00 40 00 00 b8 0b 01 00 00 01 2f 30 31 28{pad}"
+        )))
+        .unwrap();
+        assert_eq!(a.tracking, Some(TrackMode::Normal));
+        assert_eq!(a.sport, Some(false));
+        assert_eq!((a.auto_focus, a.face_focus), (Some(true), Some(false)));
+        assert_eq!((a.auto_exposure, a.face_ae), (Some(true), Some(false)));
+        assert_eq!(a.exposure_comp_thirds, Some(3));
+        assert_eq!(a.auto_wb, Some(true));
+        assert_eq!(a.blur, Some(false));
+        assert_eq!(
+            (a.contrast, a.saturation, a.sharpness, a.hue),
+            (Some(47), Some(48), Some(49), Some(40))
+        );
+        // Preset 2: Desk, face focus/AE, comp 0, WB 4400, blur on level 2.
+        let b = PresetActions::decode(&hexbytes(&format!(
+            "05 00 01 01 10 00 01 01 09 32 00 40 00 05 30 11 01 01 00 02 25 26 27 1e{pad}"
+        )))
+        .unwrap();
+        assert_eq!(b.tracking, Some(TrackMode::Desk));
+        assert_eq!((b.face_focus, b.face_ae), (Some(true), Some(true)));
+        assert_eq!(b.exposure_comp_thirds, Some(0));
+        assert_eq!((b.auto_wb, b.wb_temp), (Some(false), Some(4400)));
+        assert_eq!((b.blur, b.blur_level), (Some(true), Some(2)));
+        assert_eq!(b.hue, Some(30));
+        // Preset 3: Group, Motion speed, AF/AE/WB off (unset), blur level 8.
+        let c = PresetActions::decode(&hexbytes(&format!(
+            "09 01 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 01 01 00 08 1b 1c 1d 14{pad}"
+        )))
+        .unwrap();
+        assert_eq!(c.tracking, Some(TrackMode::Group));
+        assert_eq!(c.sport, Some(true));
+        assert_eq!(
+            (c.auto_focus, c.auto_exposure, c.auto_wb),
+            (None, None, None)
+        );
+        assert_eq!((c.exposure_comp_thirds, c.wb_temp), (None, None));
+        assert_eq!(c.blur_level, Some(8));
+        // Remaining observed mode bytes.
+        assert_eq!(actions_track_mode(0xff), Some(TrackMode::Off));
+        assert_eq!(actions_track_mode(1), Some(TrackMode::UpperBody));
+        assert_eq!(actions_track_mode(6), Some(TrackMode::Whiteboard));
+        assert_eq!(actions_track_mode(7), None);
+    }
 
     #[test]
     fn preset_writes_stay_disabled() {

@@ -106,6 +106,29 @@ not. The Tiny 3 reportedly discards preset
   `0x3E04` write the Tiny 2 had hue, contrast, saturation and sharpness at 0
   in Desk mode and stopped confirming tracking; rebuilding the presets and
   initial state in OBSBOT Center fixed it. Do not send `0x3E04`.
+- **Actions record layout** (40 bytes, same for each preset via `0x3DC4`
+  with a `u32` slot index in a `0x21` GET, and for power-on via `0x3E84`).
+  Decoded on a Tiny 2 by setting distinct values in OBSBOT Center:
+
+  | Byte | Field | Values seen |
+  |---|---|---|
+  | 0 | AI mode | `ff` none, `00` normal, `01` upper, `05` desk, `06` whiteboard, `09` group (`02`–`04` inferred: close-up, headless, lower). Hand is not offered for presets |
+  | 1 | tracking speed | `00` standard, `01` motion |
+  | 2 / 3 | auto focus on / focus target | `01` / `00` global, `01` face |
+  | 6 / 7 | auto exposure on / exposure target | `01` / `00` global, `01` face |
+  | 8 | exposure compensation | index, 9 = 0, +3 per EV step (12 = +1) |
+  | 13 | white balance | `00` auto, `05` manual |
+  | 14–15 | WB temperature u16 | e.g. `0x1130` = 4400 |
+  | 17 / 19 | background blur on / level | `00`/`01`, level 1–8 |
+  | 20–23 | contrast, saturation, sharpness, hue | 0–100 each |
+
+  `ff` (or `80` at byte 8) = "not set"; Center writes these when a control is
+  set to off. Bytes 4–5, 9–12, 16 and 18 are constant so far. The camera
+  applies the **power-on** copy at boot (colour and tracking), but a preset
+  **recall** (`0x39C4`) only moves — OBSBOT Center applies the rest itself,
+  and so does `tinyctl preset recall`. The power-on record is a copy made by
+  "As Initial State"; editing the preset afterwards does not change it. The
+  first field of `AI_GET_GIM_BOOT_POS` is the 0-based slot it was copied from.
 - **Boot actions record, first decode** (Tiny 2, 40 bytes via `0x3E84`). Unset:
   `fe ff ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00…`. After Center's "As
   Initial State" with Desk mode at tilt 30°:

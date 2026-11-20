@@ -329,7 +329,7 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             let z = need_i32(rest, "zoom 0..100")?;
             open()?.set_zoom(z)
         }
-        "preset" => cmd_preset(open()?, rest, json),
+        "preset" => cmd_preset(id, open()?, rest, json),
         "wb" => cmd_wb(id, open()?, rest),
         "hdr" => {
             let on = need_on_off(rest, "hdr")?;
@@ -851,6 +851,139 @@ fn pose_str(p: &tiny_control::device::Pose) -> String {
     )
 }
 
+fn actions_summary(a: &tiny_control::device::PresetActions) -> String {
+    let onoff_opt = |v: Option<bool>| v.map(|b| if b { "on" } else { "off" });
+    let target = |v: Option<bool>| match v {
+        Some(true) => " (face)",
+        Some(false) => " (global)",
+        None => "",
+    };
+    let mut parts = vec![match a.tracking {
+        Some(TrackMode::Off) => "no tracking".to_string(),
+        Some(m) => format!("tracking {}", m.label()),
+        None => format!("tracking mode {:#04x}", a.tracking_raw),
+    }];
+    if let Some(s) = a.sport {
+        parts.push(if s { "motion speed" } else { "standard speed" }.into());
+    }
+    if let Some(af) = onoff_opt(a.auto_focus) {
+        parts.push(format!("AF {af}{}", target(a.face_focus)));
+    }
+    if let Some(ae) = onoff_opt(a.auto_exposure) {
+        let comp = a
+            .exposure_comp_thirds
+            .map(|t| format!(" {:+.1}EV", t as f64 / 3.0))
+            .unwrap_or_default();
+        parts.push(format!("AE {ae}{}{comp}", target(a.face_ae)));
+    }
+    match (a.auto_wb, a.wb_temp) {
+        (Some(true), _) => parts.push("WB auto".into()),
+        (Some(false), Some(t)) => parts.push(format!("WB {t}K")),
+        _ => {}
+    }
+    match (a.blur, a.blur_level) {
+        (Some(true), Some(l)) => parts.push(format!("blur {l}")),
+        (Some(false), _) => parts.push("blur off".into()),
+        _ => {}
+    }
+    let img: Vec<String> = [
+        ("contrast", a.contrast),
+        ("sat", a.saturation),
+        ("sharp", a.sharpness),
+        ("hue", a.hue),
+    ]
+    .iter()
+    .filter_map(|(n, v)| v.map(|v| format!("{n} {v}")))
+    .collect();
+    if !img.is_empty() {
+        parts.push(img.join(" "));
+    }
+    parts.join(", ")
+}
+
+/// Apply a preset's settings with commands verified on hardware, and save
+/// the ones tiny-guard enforces so it does not revert them. Returns the
+/// settings that could not be applied.
+fn apply_actions(
+    id: &str,
+    dev: &Device,
+    a: &tiny_control::device::PresetActions,
+) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    let mut note = |what: &str, r: Result<()>| {
+        if let Err(e) = r {
+            notes.push(format!("{what} ({e})"));
+        }
+    };
+    for (cid, v, name) in [
+        (controls::CID_CONTRAST, a.contrast, "contrast"),
+        (controls::CID_SATURATION, a.saturation, "saturation"),
+        (controls::CID_SHARPNESS, a.sharpness, "sharpness"),
+        (controls::CID_HUE, a.hue, "hue"),
+    ] {
+        if let Some(v) = v {
+            note(name, dev.fd().set_ctrl(cid, v as i32));
+        }
+    }
+    if let Some(af) = a.auto_focus {
+        note(
+            "auto focus",
+            dev.fd().set_ctrl(controls::CID_FOCUS_AUTO, af as i32),
+        );
+    }
+    if let Some(ae) = a.auto_exposure {
+        note("auto exposure", dev.set_auto_exposure(ae));
+        if ae {
+            if let Some(face) = a.face_ae {
+                note("exposure target", dev.set_face_ae(face));
+            }
+        }
+    }
+    match (a.auto_wb, a.wb_temp) {
+        (Some(true), _) => {
+            note("white balance", dev.set_wb_auto());
+            config::save_setting(id, "auto_wb", "true")?;
+        }
+        (Some(false), Some(t)) => {
+            note("white balance", dev.set_wb_temp(t));
+            config::save_setting(id, "wb_temp", &t.to_string())?;
+            config::save_setting(id, "auto_wb", "false")?;
+        }
+        _ => {}
+    }
+    if let Some(sport) = a.sport {
+        let r = dev.set_track_speed(sport);
+        if r.is_ok() {
+            config::save_setting(id, "track_speed", if sport { "sport" } else { "std" })?;
+        }
+        note("tracking speed", r);
+    }
+    match a.tracking {
+        Some(m) => {
+            let r = dev.set_tracking(m);
+            if r.is_ok() {
+                config::save_setting(id, "tracking", m.label())?;
+            }
+            note("tracking mode", r);
+        }
+        None => notes.push(format!(
+            "tracking mode {:#04x} (not decoded yet)",
+            a.tracking_raw
+        )),
+    }
+    // Stored by OBSBOT Center but no verified command exists yet.
+    if a.auto_focus == Some(true) && a.face_focus.is_some() {
+        notes.push("focus target (no known command)".into());
+    }
+    if a.exposure_comp_thirds.is_some_and(|t| t != 0) {
+        notes.push("exposure compensation (no known command)".into());
+    }
+    if a.blur == Some(true) {
+        notes.push("background blur (no known command)".into());
+    }
+    Ok(notes)
+}
+
 fn need_slot(rest: &[String], usage: &str) -> Result<u8> {
     match rest.get(1).map(String::as_str) {
         Some(s @ ("1" | "2" | "3")) => Ok(s.parse().unwrap()),
@@ -863,7 +996,7 @@ fn need_slot(rest: &[String], usage: &str) -> Result<u8> {
 
 /// Presets are the camera's own three slots — the same ones OBSBOT Center
 /// manages — so they follow the camera between computers.
-fn cmd_preset(dev: &Device, rest: &[String], json: bool) -> Result<()> {
+fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()> {
     match rest.first().map(String::as_str) {
         Some("list") | None => {
             let slots = dev.presets()?;
@@ -924,6 +1057,20 @@ fn cmd_preset(dev: &Device, rest: &[String], json: bool) -> Result<()> {
                     ),
                     None => println!("  {}  (empty)", s.slot),
                 }
+                if s.pose.is_some() {
+                    if let Ok(a) = dev.preset_actions(s.slot) {
+                        println!("       {}", actions_summary(&a));
+                    }
+                }
+            }
+            if let Ok(a) = dev.boot_actions() {
+                let from = dev
+                    .boot_slot()
+                    .ok()
+                    .flatten()
+                    .map(|n| format!(" (copied from preset {n})"))
+                    .unwrap_or_default();
+                println!("power-on settings{from}: {}", actions_summary(&a));
             }
             match boot {
                 Ok(b) => println!(
@@ -941,6 +1088,17 @@ fn cmd_preset(dev: &Device, rest: &[String], json: bool) -> Result<()> {
             let slot = need_slot(rest, "preset recall <1|2|3>")?;
             let p = dev.preset_recall(slot)?;
             println!("recalled preset {slot} ({})", pose_str(&p));
+            // The camera only moves on a recall; OBSBOT Center applies the
+            // preset's "Additional settings" itself, so do the same here.
+            match dev.preset_actions(slot) {
+                Ok(a) => {
+                    println!("  applying: {}", actions_summary(&a));
+                    for note in apply_actions(id, dev, &a)? {
+                        println!("  not applied: {note}");
+                    }
+                }
+                Err(e) => println!("  preset settings not applied ({e})"),
+            }
             Ok(())
         }
         Some("save") => {
@@ -956,7 +1114,7 @@ fn cmd_preset(dev: &Device, rest: &[String], json: bool) -> Result<()> {
             Ok(())
         }
         Some("power-on") | Some("boot") => match rest.get(1).map(String::as_str) {
-            None => cmd_preset(dev, &["list".into()], json),
+            None => cmd_preset(id, dev, &["list".into()], json),
             Some("off") | Some("reset") | Some("default") => {
                 dev.reset_boot_pose()?;
                 println!("power-on position reset to the factory default");

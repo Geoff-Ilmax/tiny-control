@@ -163,7 +163,8 @@ tinyctl -c desk tilt -10
 tinyctl -c desk zoom 60              # 0..100
 tinyctl -c desk recenter
 tinyctl -c desk preset list          # the camera's own slots 1-3 + power-on position
-tinyctl -c desk preset recall 2      # same slots OBSBOT Center uses
+tinyctl -c desk preset recall 2      # same slots OBSBOT Center uses; also applies the
+                                     # preset's Additional settings (tracking, image, WB)
 # preset save / delete / power-on are disabled for now: while they were being
 # tested a Tiny 2 started losing colour in Desk mode. Use OBSBOT Center to save
 # presets and the power-on position until that is understood.
