@@ -262,11 +262,11 @@ other apps (Ctrl+Alt+T would otherwise open a terminal on many desktops).
 | Power | sleep / wake |
 | Track | AI tracking on / off |
 | Close-up, Hand, Whiteboard, Desk | switch to that mode; press again for tracking off |
-| ▲ ▼ ◀ ▶ (hold to repeat) | pan / tilt — 5° steps, or 1° with the camera's Fine control; honours its Swap left/right and Swap up/down |
+| ▲ ▼ ◀ ▶ | tap: one 5° step (1° with the camera's Fine control); hold: smooth move until released (30°/s, 8°/s with Fine control). Honours Swap left/right and Swap up/down |
 | Center | recenter |
 | Zoom − / + | zoom out / in |
 | P1 P2 P3 | recall that on-camera preset (with its settings) |
-| 1 2 3 4 | select camera 1–4 (order of `tinyctl list`), with a notification |
+| 1 2 3 4 | select camera 1–4 (order of `tinyctl list`) |
 
 The udev rule (`sudo ./packaging/install-root.sh`, then replug the dongle)
 gives your login session access to it. Check it with
