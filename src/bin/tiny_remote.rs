@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tiny_control::remote::{self, Button, Decoder, Press, EVENT_SIZE, EV_KEY};
+use tiny_control::{camera, config, Device};
 
 const HELP: &str = "\
 tiny-remote [--device /dev/input/eventN] [--no-grab] [--dry-run]
@@ -20,8 +21,9 @@ tiny-remote [--device /dev/input/eventN] [--no-grab] [--dry-run]
 Maps the OBSBOT Tiny Smart Remote to tinyctl commands on the selected camera:
   Power          sleep / wake            Track         tracking on / off
   Close-up, Hand, Whiteboard, Desk       that mode (press again: tracking off)
-  D-pad          pan / tilt (held: repeats; uses the camera's Fine control
-                 and swap settings from `tinyctl ui`)   Center   recenter
+  D-pad          tap: one step; hold: smooth move until released (uses the
+                 camera's Fine control and swap settings from `tinyctl ui`)
+  Center         recenter
   Zoom - / +     zoom out / in           P1 P2 P3      recall that preset
   1 2 3 4        select that camera (order of `tinyctl list`)
 
@@ -30,8 +32,84 @@ Maps the OBSBOT Tiny Smart Remote to tinyctl commands on the selected camera:
 
 // EVIOCGRAB = _IOW('E', 0x90, int)
 const EVIOCGRAB: libc::c_ulong = 0x4004_4590;
-/// Minimum spacing of auto-repeated moves while a button is held.
+/// Minimum spacing of auto-repeated zoom steps while a button is held.
 const REPEAT_EVERY: Duration = Duration::from_millis(150);
+/// Gimbal speed while a direction is held (degrees per second).
+const MOVE_DPS: f32 = 30.0;
+const FINE_MOVE_DPS: f32 = 8.0;
+/// Stop a held move if auto-repeat events stop arriving (lost release).
+const MOVE_WATCHDOG: Duration = Duration::from_millis(500);
+
+fn is_direction(b: Button) -> bool {
+    matches!(b, Button::Up | Button::Down | Button::Left | Button::Right)
+}
+
+/// A smooth move in progress: the open camera and when we last heard the
+/// button being held.
+struct Motion {
+    dev: Option<Device>,
+    last_seen: Instant,
+}
+
+impl Motion {
+    /// Start moving the selected camera in `b`'s direction.
+    fn start(b: Button, dry_run: bool) -> Result<Motion, String> {
+        if dry_run {
+            println!("move {b:?} (smooth, until released)");
+            return Ok(Motion {
+                dev: None,
+                last_seen: Instant::now(),
+            });
+        }
+        let cams = camera::all();
+        let cam = camera::resolve("selected", &cams)
+            .map_err(|e| e.to_string())?
+            .remove(0);
+        let ui = config::ConfigFile::load();
+        let on = |k: &str| {
+            ui.cameras
+                .get(&cam.id)
+                .and_then(|m| m.get(&format!("ui_{k}")))
+                .is_some_and(|v| v == "true")
+        };
+        let speed = if on("fine_control") {
+            FINE_MOVE_DPS
+        } else {
+            MOVE_DPS
+        };
+        // Positive pan = camera's left; positive tilt = up (as in the widget).
+        let (pan, tilt) = match b {
+            Button::Left => (speed, 0.0),
+            Button::Right => (-speed, 0.0),
+            Button::Up => (0.0, speed),
+            _ => (0.0, -speed),
+        };
+        let pan = if on("swap_pan") { -pan } else { pan };
+        let tilt = if on("swap_tilt") { -tilt } else { tilt };
+        let dev = cam.open().map_err(|e| e.to_string())?;
+        dev.gimbal_speed(pan, tilt).map_err(|e| e.to_string())?;
+        Ok(Motion {
+            dev: Some(dev),
+            last_seen: Instant::now(),
+        })
+    }
+
+    /// Stop, then re-sync the cached position with where the gimbal is.
+    fn stop(self) {
+        let Some(dev) = self.dev else {
+            println!("move stop");
+            return;
+        };
+        if dev.gimbal_speed(0.0, 0.0).is_err() {
+            std::thread::sleep(Duration::from_millis(50));
+            if let Err(e) = dev.gimbal_speed(0.0, 0.0) {
+                eprintln!("tiny-remote: could not stop the gimbal: {e}");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(150)); // let it settle
+        let _ = dev.sync_gimbal();
+    }
+}
 
 fn main() {
     let mut device = None;
@@ -110,8 +188,29 @@ fn main() {
 
         let mut decoder = Decoder::default();
         let mut last_repeat = Instant::now();
+        let mut motion: Option<Motion> = None;
+        // A hold whose move could not start: don't retry on every repeat and
+        // don't turn the release into a tap step.
+        let mut hold_failed = false;
         let mut buf = vec![0u8; EVENT_SIZE * 64];
         loop {
+            // Wake at least every 100 ms so a held move can be stopped by the
+            // watchdog even if no event arrives.
+            let mut pfd = libc::pollfd {
+                fd: file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pfd, 1, 100) };
+            if motion
+                .as_ref()
+                .is_some_and(|m| m.last_seen.elapsed() > MOVE_WATCHDOG)
+            {
+                motion.take().unwrap().stop();
+            }
+            if ready <= 0 {
+                continue;
+            }
             let n = match file.read(&mut buf) {
                 Ok(0) | Err(_) => break, // unplugged
                 Ok(n) => n,
@@ -124,12 +223,33 @@ fn main() {
                     continue;
                 }
                 match decoder.key(code, value) {
+                    // Directions act on release (tap) or first repeat (hold).
+                    Some(Press::Down(b)) if is_direction(b) => hold_failed = false,
+                    Some(Press::Repeat(b)) if is_direction(b) => match &mut motion {
+                        Some(m) => m.last_seen = Instant::now(),
+                        None if hold_failed => {}
+                        None => match Motion::start(b, dry_run) {
+                            Ok(m) => motion = Some(m),
+                            Err(e) => {
+                                hold_failed = true;
+                                eprintln!("tiny-remote: {e}");
+                                notify(&e);
+                            }
+                        },
+                    },
+                    Some(Press::Up(b)) if is_direction(b) => match motion.take() {
+                        Some(m) => m.stop(),
+                        None if hold_failed => hold_failed = false,
+                        None => {
+                            let _ = tx.send(b); // a tap: one step
+                        }
+                    },
                     Some(Press::Down(b)) => {
                         last_repeat = Instant::now();
                         let _ = tx.send(b);
                     }
-                    // Held D-pad / zoom: keep moving, but never pile up
-                    // commands behind a slow camera.
+                    // Held zoom: keep stepping, but never pile up commands
+                    // behind a slow camera.
                     Some(Press::Repeat(b))
                         if last_repeat.elapsed() >= REPEAT_EVERY
                             && !busy.load(Ordering::SeqCst) =>
@@ -140,6 +260,9 @@ fn main() {
                     _ => {}
                 }
             }
+        }
+        if let Some(m) = motion.take() {
+            m.stop();
         }
         eprintln!("tiny-remote: remote disconnected; waiting for it to return");
     }
@@ -269,8 +392,7 @@ impl Runner {
             }
             Button::Camera(n) => {
                 self.ui = None; // preferences are per camera
-                self.tc(&["select", &n.to_string()])
-                    .map(|s| Some(s.replacen("selected ", "Camera: ", 1)))
+                self.tc(&["select", &n.to_string()]).map(|_| None)
             }
         };
         match result {
@@ -305,7 +427,11 @@ fn notify(msg: &str) {
             msg,
         ])
         .spawn()
-        .and_then(|mut c| c.wait());
+        // Reap it in the background so a slow notification daemon never
+        // delays the next button.
+        .map(|mut c| {
+            std::thread::spawn(move || c.wait());
+        });
 }
 
 /// `"key":"value"` from tinyctl's flat JSON.

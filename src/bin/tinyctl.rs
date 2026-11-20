@@ -331,11 +331,20 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
         "pan" | "tilt" if rest.first().map(String::as_str) == Some("by") => {
             let d = need_finite(&rest[1..], "degrees")?;
             let dev = open()?;
-            let s = dev.status()?;
+            // Start from where the gimbal really is when the model reports
+            // it (after tracking, presets or speed moves the UVC readback
+            // is stale); otherwise from the last commanded angle.
+            let (pan, tilt) = match dev.live_gimbal() {
+                Ok(live) => live,
+                Err(_) => {
+                    let s = dev.status()?;
+                    (s.pan_deg, s.tilt_deg)
+                }
+            };
             let (cid, cur) = if cmd == "pan" {
-                (controls::CID_PAN_ABSOLUTE, s.pan_deg)
+                (controls::CID_PAN_ABSOLUTE, pan)
             } else {
-                (controls::CID_TILT_ABSOLUTE, s.tilt_deg)
+                (controls::CID_TILT_ABSOLUTE, tilt)
             };
             let (lo, hi) = dev.gimbal_range_deg(cid);
             let target = (cur + d).clamp(lo, hi);
@@ -723,7 +732,12 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
-    let s = dev.status()?;
+    let mut s = dev.status()?;
+    // Report where the gimbal really is when the model can tell us.
+    if let Ok((pan, tilt)) = dev.live_gimbal() {
+        s.pan_deg = pan;
+        s.tilt_deg = tilt;
+    }
     if raw && !json {
         println!("camera      : {} ({})", cam.label(), cam.info.model.name);
         for (i, row) in s.raw.chunks(16).enumerate() {

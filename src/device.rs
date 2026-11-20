@@ -28,6 +28,13 @@ const RCV_UPGRADE: u8 = 0x0D;
 const CMD_DEV_STATUS: u16 = 0xA0C2; // sleep/wake
 const CMD_RECENTER: u16 = 0x00C3;
 const CMD_GIMBAL_MOVE: u16 = 0x6444; // move-to-angle, 3x f32 motor degrees
+                                     // Gimbal velocity (roll, pitch, yaw f32 deg/s; yaw + = camera's left, pitch +
+                                     // = down). Measured on a Tiny 2 (lxman/obsbot-mcp) and a Tiny 3
+                                     // (brendanwelsh/obsbot-tiny3-protocol).
+const CMD_GIM_SPEED: u16 = 0x6484;
+// Live gimbal state: 9x i16 deci-degrees; Euler pitch at 8 (+ = down), Euler
+// yaw at 10 (+ = left = +UVC pan). Decoded on the Tiny 2 (lxman).
+const CMD_GIM_STATE: u16 = 0x6604;
 const CMD_TRACK_SPEED: u16 = 0x0CC4; // payload [0]=standard [2]=sport
 const CMD_GET_SN: u16 = 0x18C8;
 const CMD_GET_UUID: u16 = 0x1808;
@@ -1155,6 +1162,60 @@ impl Device {
         }
         let asec = (deg * controls::ASEC_PER_DEG).round() as i32;
         self.fd.set_ctrl(cid, asec)
+    }
+
+    /// Turn the gimbal continuously at `pan_dps` / `tilt_dps` degrees per
+    /// second (positive = camera's left / up); 0, 0 stops it.
+    pub fn gimbal_speed(&self, pan_dps: f32, tilt_dps: f32) -> Result<()> {
+        self.model.require(Feature::Gimbal)?;
+        let mut p = Vec::with_capacity(12);
+        for v in [0.0f32, -tilt_dps, pan_dps] {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        self.send_set(RCV_AI, CMD_GIM_SPEED, &p)
+    }
+
+    /// The gimbal's real (pan, tilt) in degrees, wherever it got to — unlike
+    /// the UVC readback, which uvcvideo caches from the last host write.
+    /// Tiny 2 layout; refused on the Tiny 3 generation until its record is
+    /// decoded.
+    pub fn live_gimbal(&self) -> Result<(f64, f64)> {
+        if self.model.family == Family::Tiny3 {
+            return Err(Error::Unsupported {
+                feature: "live gimbal position".into(),
+                model: self.model.name.into(),
+            });
+        }
+        let r = self.transact_get(RCV_AI, CMD_GIM_STATE, "gimbal state")?;
+        if r.payload.len() < 12 {
+            return Err(Error::NoReply("gimbal state"));
+        }
+        let i16_at = |o: usize| i16::from_le_bytes([r.payload[o], r.payload[o + 1]]) as f64 / 10.0;
+        Ok((i16_at(10), -i16_at(8)))
+    }
+
+    /// Re-sync uvcvideo's cached pan/tilt with the real position (after a
+    /// velocity move, tracking or a preset recall) by writing the live angle
+    /// back. The gimbal moves by less than the 1° UVC resolution.
+    pub fn sync_gimbal(&self) -> Result<(f64, f64)> {
+        let (pan, tilt) = self.live_gimbal()?;
+        let pan = pan.round().clamp(
+            self.gimbal_range_deg(controls::CID_PAN_ABSOLUTE).0,
+            self.gimbal_range_deg(controls::CID_PAN_ABSOLUTE).1,
+        );
+        let tilt = tilt.round().clamp(
+            self.gimbal_range_deg(controls::CID_TILT_ABSOLUTE).0,
+            self.gimbal_range_deg(controls::CID_TILT_ABSOLUTE).1,
+        );
+        self.fd.set_ctrl(
+            controls::CID_PAN_ABSOLUTE,
+            (pan * controls::ASEC_PER_DEG) as i32,
+        )?;
+        self.fd.set_ctrl(
+            controls::CID_TILT_ABSOLUTE,
+            (tilt * controls::ASEC_PER_DEG) as i32,
+        )?;
+        Ok((pan, tilt))
     }
 
     /// Absolute pan via the standard UVC control, within the camera's range.

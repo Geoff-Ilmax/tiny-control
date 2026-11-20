@@ -118,6 +118,9 @@ impl Button {
 pub struct Decoder {
     ctrl: bool,
     alt: bool,
+    /// The remote button being held (its key code), so its release is seen
+    /// even though the dongle lets go of Ctrl/Alt first.
+    held: Option<(u16, Button)>,
 }
 
 /// What a key event means for the caller.
@@ -127,6 +130,8 @@ pub enum Press {
     Down(Button),
     /// Kernel auto-repeat while the button is held.
     Repeat(Button),
+    /// The button was let go.
+    Up(Button),
 }
 
 impl Decoder {
@@ -136,10 +141,23 @@ impl Decoder {
         match code {
             key::LEFTCTRL | key::RIGHTCTRL => self.ctrl = down,
             key::LEFTALT | key::RIGHTALT => self.alt = down,
+            // The dongle releases Ctrl/Alt before the key, so match the
+            // release against the held button, not the modifiers.
+            _ if value == 0 => {
+                if let Some((c, b)) = self.held {
+                    if c == code {
+                        self.held = None;
+                        return Some(Press::Up(b));
+                    }
+                }
+            }
             _ if self.ctrl && self.alt => {
                 let b = Button::from_key(code)?;
                 return match value {
-                    1 => Some(Press::Down(b)),
+                    1 => {
+                        self.held = Some((code, b));
+                        Some(Press::Down(b))
+                    }
                     2 if b.repeats() => Some(Press::Repeat(b)),
                     _ => None,
                 };
@@ -220,8 +238,11 @@ mod tests {
         assert_eq!(d.key(key::T, 2), None); // power does not repeat
         assert_eq!(d.key(key::LEFT, 1), Some(Press::Down(Button::Left)));
         assert_eq!(d.key(key::LEFT, 2), Some(Press::Repeat(Button::Left)));
-        assert_eq!(d.key(key::LEFT, 0), None);
+        // As captured: Ctrl and Alt are released before the key itself.
+        d.key(key::LEFTCTRL, 0);
         d.key(key::LEFTALT, 0);
+        assert_eq!(d.key(key::LEFT, 0), Some(Press::Up(Button::Left)));
+        assert_eq!(d.key(key::LEFT, 0), None);
         assert_eq!(d.key(key::LEFT, 1), None);
     }
 
