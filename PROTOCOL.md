@@ -143,6 +143,19 @@ not. The Tiny 3 reportedly discards preset
   `05 ff 01 00 10 00 01 00 0c 32 00 40 00 00 b8 0b 00 00 00 00 ff ff ff ff 00…`.
   Byte 0 = `05` = Desk (the Tiny 2 AI category); bytes 14–15 = `0x0bb8` =
   3000 = tilt 30.00° in hundredths. The rest is not yet decoded.
+- **Tiny 3 differs** (one preset saved, read-only dumps):
+  - `AI_GET_GIM_BOOT_POS` returns **38 bytes**: `u32` slot index, one pad
+    byte, then *unaligned* f32 yaw, pitch, roll, zoom, then four more f32
+    (`0.5, 0.5, 1.0, 1.0` — possibly a framing rectangle) and a pad byte.
+    Example: `00 00 00 00 | 00 | e2 7a fc c0 (−7.89) | 67 66 46 40 (3.10) |
+    0 | 1.0 | 0.5 | 0.5 | 1.0 | 1.0 | 00`.
+  - The 40-byte actions record has a different layout, e.g.
+    `0b 05 01 01 00 00 01 01 09 4a 01 01 00 00 48 0d 00 00 00 00 ff ff ff ff
+    00 ff 00 80 00 80 00 1c 1c ff…` (`0x0d48` = 3400 at 14–15, likely WB).
+    The power-on copy equals preset 1's, so "As Initial State" copies here too.
+  - Flat selector `0x0C` gives no usable list, and slots without a preset do
+    not answer `0x3DC4`. tinyctl refuses preset commands on the Tiny 3
+    family until these are decoded; `probe boot` dumps them.
 - Replies: flags `0x09` is an ACK with no payload (stale bytes follow), `0x89`
   an error with the code at bytes 14–15; both are handled by `frame::parse`.
 

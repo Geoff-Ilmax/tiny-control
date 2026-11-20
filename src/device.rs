@@ -9,7 +9,7 @@ use crate::controls;
 use crate::error::{Error, Result};
 use crate::frame::{self, FLAG_GET, FLAG_SET};
 use crate::ioctl::VideoFd;
-use crate::model::{Feature, Model, Support};
+use crate::model::{Family, Feature, Model, Support};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
@@ -573,11 +573,27 @@ impl Device {
 
     // --- on-camera presets (slots 1..=3) and boot pose ---
 
+    /// The preset/power-on records decoded so far are the Tiny 2's. The Tiny
+    /// 3 generation uses different layouts (38-byte boot pose with unaligned
+    /// floats, a different settings record, no selector-12 list), so refuse
+    /// rather than misread them. `probe boot` still dumps them raw.
+    fn presets_decoded(&self) -> Result<()> {
+        if self.model.family == Family::Tiny3 {
+            return Err(Error::Config(format!(
+                "on-camera presets are not decoded for the {} yet (its preset records use a \
+                 different layout); use OBSBOT Center for now",
+                self.model.name
+            )));
+        }
+        Ok(())
+    }
+
     /// Read all three on-camera preset slots (the ones OBSBOT Center shows).
     /// Flat selector 12 lists occupied slots; echoing it back resets the
     /// selector-13 cursor, which then yields one entry per read.
     pub fn presets(&self) -> Result<Vec<PresetSlot>> {
         self.model.require(Feature::PresetRecall)?;
+        self.presets_decoded()?;
         let list = self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST)?;
         let count = list[0];
         // A dead/asleep read returns all zeros; a genuine empty store does not.
@@ -718,6 +734,7 @@ impl Device {
     /// slot index).
     pub fn preset_actions(&self, slot: u8) -> Result<PresetActions> {
         self.model.require(Feature::PresetRecall)?;
+        self.presets_decoded()?;
         let idx = check_slot(slot)?;
         let r = self.transact_get_with(
             RCV_AI,
@@ -732,6 +749,7 @@ impl Device {
     /// "As Initial State"; the camera applies it at boot).
     pub fn boot_actions(&self) -> Result<PresetActions> {
         self.model.require(Feature::PowerOnPose)?;
+        self.presets_decoded()?;
         let r = self.transact_get(RCV_AI, CMD_BOOT_ACTIONS_GET, "power-on settings")?;
         PresetActions::decode(&r.payload).ok_or(Error::NoReply("power-on settings"))
     }
@@ -740,6 +758,7 @@ impl Device {
     /// boot-pose record, 0-based), if it holds a slot index.
     pub fn boot_slot(&self) -> Result<Option<u8>> {
         self.model.require(Feature::PowerOnPose)?;
+        self.presets_decoded()?;
         let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
         let idx = r
             .payload
@@ -753,6 +772,7 @@ impl Device {
     /// The pose the camera moves to when it powers on.
     pub fn boot_pose(&self) -> Result<Pose> {
         self.model.require(Feature::PowerOnPose)?;
+        self.presets_decoded()?;
         let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
         // Six f32 LE: [0, yaw, pitch, roll, zoom, 0].
         if r.payload.len() < 20 {
@@ -838,6 +858,35 @@ impl Device {
                 )
             })
         }))
+        .chain(std::iter::once((
+            "AI_GET_GIMBAL_PRESET_LIST 0x3B44",
+            self.transact_get(RCV_AI, 0x3B44, "AI_GET_GIMBAL_PRESET_LIST")
+                .map(|r| r.payload),
+        )))
+        .chain((0..PRESET_SLOTS as u32).flat_map(|idx| {
+            const VALUE: [&str; 3] = [
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 1",
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 2",
+                "AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 3",
+            ];
+            const NAME: [&str; 3] = [
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 1",
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 2",
+                "AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 3",
+            ];
+            let i = idx as usize;
+            [(VALUE[i], 0x3A44u16), (NAME[i], 0x3B04)].map(|(name, cmd)| {
+                (
+                    name,
+                    self.transact_get_with(RCV_AI, cmd, &idx.to_le_bytes(), name)
+                        .map(|r| r.payload),
+                )
+            })
+        }))
+        .chain(std::iter::once((
+            "XU selector 0x0C (raw preset list, GET only)",
+            self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST).map(|b| b.to_vec()),
+        )))
         .chain(std::iter::once((
             "AI_GET_PRESETS_ACTIONS 0x3DC4 (no slot)",
             self.transact_get(RCV_AI, 0x3DC4, "AI_GET_PRESETS_ACTIONS")
