@@ -1,6 +1,7 @@
-# OBSBOT Tiny 3 Lite — Linux control protocol notes
+# OBSBOT Tiny 2 / Tiny 3 — Linux control protocol notes
 
-Everything in this document was verified against a real OBSBOT Tiny 3 Lite
+Unless a section says otherwise, everything in this document was verified
+against a real OBSBOT Tiny 3 Lite
 (USB `3564:ff04`, firmware `bcdDevice 0510`) unless marked otherwise.
 Dead ends are documented too — they save the next person hours.
 
@@ -15,6 +16,33 @@ Dead ends are documented too — they save the next person hours.
 | Stable video node | `/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_3_Lite-video-index0` |
 
 Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
+
+## Other models and multiple cameras
+
+| Model | USB ID | Product string | Notes |
+|---|---|---|---|
+| Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout (index0 capture, index1 metadata); XU assumed identical, unconfirmed |
+| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; see Tiny4Linux |
+
+Model differences handled in code:
+
+- **Hand tracking readback.** The Tiny 2 reports hand tracking as AI category
+  `6` at status byte `0x18`, although the SET TLV uses category `3`
+  (observed by Tiny4Linux). Both decode to `hand`.
+- **Gimbal range.** Pan/tilt limits are read with `VIDIOC_QUERYCTRL` instead of
+  assuming the Tiny 3 Lite's ±130°/±90°.
+
+Identification with several cameras:
+
+- These cameras publish **no USB iSerial**, so `/dev/v4l/by-id` names carry no
+  serial and two identical models collide (`…OBSBOT_Tiny_2-video-index0`).
+  `by-path` names are unique but tied to the port.
+- Discovery therefore walks sysfs (`/sys/class/video4linux/*/index == 0` whose
+  USB ancestor has `idVendor == 3564`), and the stable id is the 14-character
+  vendor serial from `UG_GET_SN` (below), which can be read without waking a
+  sleeping camera. It is cached per USB port + devnum, so each camera is opened
+  for it at most once per plug-in.
 
 ## USB interface topology
 
@@ -117,7 +145,7 @@ against this camera — treat as unverified:
 | Gimbal move-to-angle | `0x25` | `0x6444` | `0x04` | roll, pitch, yaw — 3× float32 LE (motor degrees) |
 | Tracking speed | `0x25` | `0x0CC4` | `0x04` | `00` standard / `02` sport |
 
-Absolute pan/tilt via the standard UVC controls (`t3ctl pan`/`tilt`) is the
+Absolute pan/tilt via the standard UVC controls (`tinyctl pan`/`tilt`) is the
 verified path for positioning; `gimbal_move` is kept only as a documented
 alternative.
 
@@ -167,7 +195,7 @@ tool is safe to run against a sleeping camera; only capture wakes it.
 `pan_absolute`/`tilt_absolute` returns the last value the *driver* wrote, not a
 live hardware read (uvcvideo caches controls lacking the AUTO_UPDATE quirk). So
 after a vendor recenter frame (`0x00C3`), the gimbal physically centers but the
-UVC readback still reports the old angle. `t3ctl` implements recenter as UVC
+UVC readback still reports the old angle. `tinyctl` implements recenter as UVC
 `pan=0`/`tilt=0` instead, which both moves the gimbal and keeps readback honest.
 
 **ioctl-number gotcha (cost real time here):** `VIDIOC_G_CTRL`/`S_CTRL` are
@@ -256,7 +284,7 @@ broken** — never trust readback alone; verify with a captured frame.
 gimbal live) — ffmpeg, a browser, any `VIDIOC_STREAMON`. But merely opening the
 node for **control** ioctls (`VIDIOC_G_CTRL`, XU GET/SET, framed vendor GETs)
 does **not** wake a sleeping camera — those reads work while it sleeps and leave
-it asleep. So `t3ctl status`/`info` are safe on a sleeping camera; only capture
+it asleep. So `tinyctl status`/`info` are safe on a sleeping camera; only capture
 wakes it. Idle *monitoring* still must hold **no** fd so USB autosuspend can
 engage — inotify on the node works (it doesn't open the device).
 
@@ -322,7 +350,7 @@ in such a room. Keep target temperature configurable.
 | 2026-08-31 | UVC pan 20°/tilt 10°/zoom 60 | ✅ frame-verified gimbal moved; readback matched |
 | 2026-08-31 | recenter via UVC pan=0/tilt=0 | ✅ frame-verified centered; readback honest (vendor 0x00C3 desyncs the cache) |
 | 2026-08-31 | WB manual 4000K pin (auto=0, pause, temp last) | ✅ clean image, red/blue stayed 127, no neon-green |
-| 2026-08-31 | AI track normal/upper, HDR on/off via t3ctl | ✅ status round-trip confirms each |
-| 2026-08-31 | t3-wb-guard integration | ✅ zero-fd idle (camera suspends), re-pins WB within ~4s of an app flipping it to auto |
+| 2026-08-31 | AI track normal/upper, HDR on/off via tinyctl | ✅ status round-trip confirms each |
+| 2026-08-31 | tiny-guard integration | ✅ zero-fd idle (camera suspends), re-pins WB within ~4s of an app flipping it to auto |
 | 2026-08-31 | FOV wide vs narrow TLV `04 01 00`/`04 01 02` | ✅ frame-verified: narrow is a visibly tighter crop than wide |
 | 2026-08-31 | Status GET ×4 on a sleeping camera | ✅ stayed `sleep=1` across ~6 s; control reads don't wake it |

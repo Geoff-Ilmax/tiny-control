@@ -57,7 +57,7 @@ jobs:
 
       - name: Verify the binaries are static
         run: |
-          for b in t3ctl t3-wb-guard; do
+          for b in tinyctl tiny-guard; do
             path="target/${{ matrix.target }}/release/$b"
             file "$path"
             # A statically linked binary must have no dynamic interpreter.
@@ -71,10 +71,10 @@ jobs:
       - name: Stage binaries
         run: |
           mkdir -p staging/${{ matrix.pkgarch }}
-          install -Dm755 target/${{ matrix.target }}/release/t3ctl \
-            staging/${{ matrix.pkgarch }}/t3ctl
-          install -Dm755 target/${{ matrix.target }}/release/t3-wb-guard \
-            staging/${{ matrix.pkgarch }}/t3-wb-guard
+          install -Dm755 target/${{ matrix.target }}/release/tinyctl \
+            staging/${{ matrix.pkgarch }}/tinyctl
+          install -Dm755 target/${{ matrix.target }}/release/tiny-guard \
+            staging/${{ matrix.pkgarch }}/tiny-guard
 
       - uses: actions/upload-artifact@v4
         with:
@@ -116,7 +116,7 @@ jobs:
           path: staging
 
       - name: Restore executable bits
-        run: chmod +x staging/bin-*/t3ctl staging/bin-*/t3-wb-guard
+        run: chmod +x staging/bin-*/tinyctl staging/bin-*/tiny-guard
 
       - name: Install nfpm (checksum-verified)
         run: |
@@ -135,12 +135,12 @@ jobs:
           mkdir -p dist
           declare -A TRIPLE=( [amd64]=x86_64-linux-musl [arm64]=aarch64-linux-musl )
           for arch in amd64 arm64; do
-            name="obsbot-tiny3-linux-${VERSION}-${TRIPLE[$arch]}"
+            name="tiny-control-${VERSION}-${TRIPLE[$arch]}"
             root="build/$name"
             mkdir -p "$root/bin"
-            install -Dm755 "staging/bin-$arch/t3ctl"       "$root/t3ctl"
-            install -Dm755 "staging/bin-$arch/t3-wb-guard" "$root/t3-wb-guard"
-            install -Dm755 bin/t3-preview                  "$root/bin/t3-preview"
+            install -Dm755 "staging/bin-$arch/tinyctl"       "$root/tinyctl"
+            install -Dm755 "staging/bin-$arch/tiny-guard" "$root/tiny-guard"
+            install -Dm755 bin/tiny-preview                  "$root/bin/tiny-preview"
             install -Dm755 install.sh                      "$root/install.sh"
             cp -r packaging                                "$root/packaging"
             cp README.md PROTOCOL.md CONTRIBUTING.md LICENSE "$root/"
@@ -171,9 +171,9 @@ jobs:
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
           set -euo pipefail
-          src="obsbot-tiny3-linux-${VERSION}.tar.gz"
+          src="tiny-control-${VERSION}.tar.gz"
           git archive --format=tar.gz \
-            --prefix="obsbot-tiny3-linux-${VERSION}/" \
+            --prefix="tiny-control-${VERSION}/" \
             -o "dist/$src" "$TAG"
           sha="$(sha256sum "dist/$src" | cut -d' ' -f1)"
           sed -e "s|@PKGVER@|${VERSION}|g" -e "s|@SHA256@|${sha}|g" \
@@ -211,19 +211,19 @@ jobs:
             echo
             echo '```bash'
             echo "REL=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-            echo "curl -fLO \"\$REL/obsbot-tiny3-linux-${VERSION}-x86_64-linux-musl.tar.gz\""
+            echo "curl -fLO \"\$REL/tiny-control-${VERSION}-x86_64-linux-musl.tar.gz\""
             echo "curl -fLO \"\$REL/SHA256SUMS\""
             echo 'sha256sum --check --ignore-missing SHA256SUMS'
             echo "# and, with the gh CLI, the provenance of the build itself:"
-            echo "gh attestation verify obsbot-tiny3-linux-${VERSION}-x86_64-linux-musl.tar.gz \\"
+            echo "gh attestation verify tiny-control-${VERSION}-x86_64-linux-musl.tar.gz \\"
             echo "  --repo ${GITHUB_REPOSITORY}"
             echo '```'
             echo
             echo '### Then'
             echo
             echo '```bash'
-            echo "tar xzf obsbot-tiny3-linux-${VERSION}-x86_64-linux-musl.tar.gz"
-            echo "cd obsbot-tiny3-linux-${VERSION}-x86_64-linux-musl"
+            echo "tar xzf tiny-control-${VERSION}-x86_64-linux-musl.tar.gz"
+            echo "cd tiny-control-${VERSION}-x86_64-linux-musl"
             echo './install.sh                       # prebuilt binaries -> ~/.local/bin, no sudo'
             echo 'sudo ./packaging/install-root.sh   # udev rule + system config (one-time)'
             echo '```'
@@ -244,7 +244,7 @@ jobs:
             gh release edit "$TAG" --notes-file "$notes"
           else
             gh release create "$TAG" dist/* \
-              --title "obsbot-tiny3-linux $TAG" \
+              --title "tiny-control $TAG" \
               --notes-file "$notes" \
               --verify-tag
           fi

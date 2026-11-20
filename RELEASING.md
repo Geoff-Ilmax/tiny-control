@@ -12,7 +12,7 @@ uploaded by hand, and no install path in this repo tracks a mutable branch.
 3. Commit, then tag and push:
 
    ```bash
-   git tag -a v0.1.0 -m "obsbot-tiny3-linux v0.1.0"
+   git tag -a v0.1.0 -m "tiny-control v0.1.0"
    git push origin main --follow-tags
    ```
 
@@ -23,12 +23,12 @@ disagree.
 
 | Asset | Notes |
 |---|---|
-| `obsbot-tiny3-linux-<ver>-x86_64-linux-musl.tar.gz` | Static binaries + installer + packaging files |
-| `obsbot-tiny3-linux-<ver>-aarch64-linux-musl.tar.gz` | Same, arm64 (built on a native arm64 runner) |
-| `obsbot-tiny3-linux_<ver>_{amd64,arm64}.deb` | Debian/Ubuntu |
-| `obsbot-tiny3-linux-<ver>-1.{x86_64,aarch64}.rpm` | Fedora/RHEL |
-| `obsbot-tiny3-linux-<ver>-1-{x86_64,aarch64}.pkg.tar.zst` | Arch |
-| `obsbot-tiny3-linux-<ver>.tar.gz` | Source tarball (`git archive` of the tag) |
+| `tiny-control-<ver>-x86_64-linux-musl.tar.gz` | Static binaries + installer + packaging files |
+| `tiny-control-<ver>-aarch64-linux-musl.tar.gz` | Same, arm64 (built on a native arm64 runner) |
+| `tiny-control_<ver>_{amd64,arm64}.deb` | Debian/Ubuntu |
+| `tiny-control-<ver>-1.{x86_64,aarch64}.rpm` | Fedora/RHEL |
+| `tiny-control-<ver>-1-{x86_64,aarch64}.pkg.tar.zst` | Arch |
+| `tiny-control-<ver>.tar.gz` | Source tarball (`git archive` of the tag) |
 | `PKGBUILD` | Rendered from `packaging/PKGBUILD.in`, pinning the source tarball by `sha256` |
 | `SHA256SUMS` | Covers every asset above |
 
@@ -41,7 +41,7 @@ attestation](https://docs.github.com/actions/security-guides/using-artifact-atte
 so a consumer can prove an artifact came from this repo's workflow at that tag:
 
 ```bash
-gh attestation verify <asset> --repo joshualambert/obsbot-tiny3-linux
+gh attestation verify <asset> --repo Geoff-Ilmax/tiny-control
 ```
 
 ## Why the PKGBUILD pins a self-hosted tarball
@@ -62,7 +62,7 @@ always matches the newest published release. Edit
 ```bash
 cargo build --release --locked --target x86_64-unknown-linux-musl
 mkdir -p staging/current dist
-cp target/x86_64-unknown-linux-musl/release/{t3ctl,t3-wb-guard} staging/current/
+cp target/x86_64-unknown-linux-musl/release/{tinyctl,tiny-guard} staging/current/
 PKG_ARCH=amd64 PKG_VERSION=0.1.0 \
   nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
 ```

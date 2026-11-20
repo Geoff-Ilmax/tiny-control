@@ -1,6 +1,6 @@
 [package]
 name = "tiny-control"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Linux control suite for OBSBOT Tiny 2 and Tiny 3 series webcams, with multi-camera support (sleep/wake, AI tracking, gimbal, white balance)"

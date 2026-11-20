@@ -29,6 +29,7 @@ CAMERA is one of:
 CAMERAS
     list                  Connected cameras: number, id, alias, model, USB port
     select <CAMERA>       Set the selected camera (used by the bar widget/hotkeys)
+    select next|prev      Cycle the selection through connected cameras
     selected              Print the selected camera's id
     alias <CAMERA> <name> Name a camera (letters, digits, - and _)
     alias <CAMERA> --clear
@@ -159,8 +160,12 @@ fn run(mut args: Vec<String>) -> Result<()> {
             let sel = rest
                 .first()
                 .or(o.camera.as_ref())
-                .ok_or_else(|| Error::Usage("select <CAMERA>".into()))?;
-            let cam = single(camera::resolve(sel, &camera::all())?, "select")?;
+                .ok_or_else(|| Error::Usage("select <CAMERA>|next|prev".into()))?;
+            let cams = camera::all();
+            let cam = match sel.as_str() {
+                "next" | "prev" => step_selection(&cams, sel == "next")?,
+                _ => single(camera::resolve(sel, &cams)?, "select")?,
+            };
             config::set_selected(&cam.id)?;
             println!("selected {} ({})", cam.label(), cam.info.model.name);
             return Ok(());
@@ -196,6 +201,24 @@ fn run(mut args: Vec<String>) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The camera after (or before) the selected one in `list` order, wrapping.
+fn step_selection(cams: &[Cam], forward: bool) -> Result<Cam> {
+    if cams.is_empty() {
+        return Err(Error::DeviceNotFound(
+            "no OBSBOT cameras are connected".into(),
+        ));
+    }
+    let n = cams.len();
+    let cur = config::selected().and_then(|id| cams.iter().position(|c| c.id == id));
+    let i = match (cur, forward) {
+        (None, true) => 0,
+        (None, false) => n - 1,
+        (Some(i), true) => (i + 1) % n,
+        (Some(i), false) => (i + n - 1) % n,
+    };
+    Ok(cams[i].clone())
 }
 
 fn single(mut v: Vec<Cam>, what: &str) -> Result<Cam> {

@@ -1,20 +1,20 @@
-# Maintainer: Josh Lambert
+# Maintainer: Geoff-Ilmax (forked from obsbot-tiny3-linux by Josh Lambert)
 #
 # TEMPLATE. The release workflow renders this into the real PKGBUILD for each
 # tag: @PKGVER@ becomes the version and @SHA256@ the sha256 of that release's
 # source tarball. The rendered file is published as a release asset and
 # committed back to packaging/PKGBUILD — never edit that copy by hand.
-pkgname=obsbot-tiny3-linux
+pkgname=tiny-control
 pkgver=@PKGVER@
 pkgrel=1
 pkgdesc="Linux control suite for the OBSBOT Tiny 3 series webcam (sleep/wake, AI tracking, gimbal, white balance)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/joshualambert/obsbot-tiny3-linux"
+url="https://github.com/Geoff-Ilmax/tiny-control"
 license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo')
 optdepends=('v4l-utils: manual UVC control inspection')
-backup=('etc/obsbot-tiny3/config')
+backup=('etc/tiny-control/config')
 # Pinned to the release asset we publish and checksum ourselves, not to
 # GitHub's auto-generated /archive/ tarball (which GitHub can regenerate).
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
@@ -42,33 +42,33 @@ check() {
 package() {
     cd "$pkgname-$pkgver"
 
-    install -Dm755 target/release/t3ctl "$pkgdir/usr/bin/t3ctl"
-    install -Dm755 target/release/t3-wb-guard "$pkgdir/usr/bin/t3-wb-guard"
-    install -Dm755 bin/t3-preview "$pkgdir/usr/bin/t3-preview"
+    install -Dm755 target/release/tinyctl "$pkgdir/usr/bin/tinyctl"
+    install -Dm755 target/release/tiny-guard "$pkgdir/usr/bin/tiny-guard"
+    install -Dm755 bin/tiny-preview "$pkgdir/usr/bin/tiny-preview"
 
-    # Per-user systemd unit (enable with: systemctl --user enable --now t3-wb-guard)
-    install -Dm644 packaging/systemd/t3-wb-guard.service \
-        "$pkgdir/usr/lib/systemd/user/t3-wb-guard.service"
+    # Per-user systemd unit (enable with: systemctl --user enable --now tiny-guard)
+    install -Dm644 packaging/systemd/tiny-guard.service \
+        "$pkgdir/usr/lib/systemd/user/tiny-guard.service"
 
     # udev: group access + cold-plug WB pin
-    install -Dm644 packaging/udev/71-obsbot-tiny3.rules \
-        "$pkgdir/usr/lib/udev/rules.d/71-obsbot-tiny3.rules"
+    install -Dm644 packaging/udev/71-tiny-control.rules \
+        "$pkgdir/usr/lib/udev/rules.d/71-tiny-control.rules"
 
     # Default system config (used by the root/udev context); marked as backup.
-    install -Dm644 packaging/config.example "$pkgdir/etc/obsbot-tiny3/config"
+    install -Dm644 packaging/config.example "$pkgdir/etc/tiny-control/config"
 
     # Example Hyprland keybindings + preview window rule (user copies what they want)
-    install -Dm644 packaging/hypr/obsbot-tiny3.conf \
-        "$pkgdir/usr/share/obsbot-tiny3-linux/hypr/obsbot-tiny3.conf"
+    install -Dm644 packaging/hypr/tiny-control.conf \
+        "$pkgdir/usr/share/tiny-control/hypr/tiny-control.conf"
     install -Dm644 packaging/hypr/bindings.omarchy.lua \
-        "$pkgdir/usr/share/obsbot-tiny3-linux/hypr/bindings.omarchy.lua"
+        "$pkgdir/usr/share/tiny-control/hypr/bindings.omarchy.lua"
     install -Dm644 packaging/hypr/windows.omarchy.lua \
-        "$pkgdir/usr/share/obsbot-tiny3-linux/hypr/windows.omarchy.lua"
+        "$pkgdir/usr/share/tiny-control/hypr/windows.omarchy.lua"
 
     # Omarchy menu snippet (the bar WIDGET is a separate repo / marketplace
-    # listing: https://github.com/joshualambert/omarchy-obsbot-tiny3)
+    # listing: https://github.com/Geoff-Ilmax/omarchy-tiny-control)
     install -Dm644 packaging/omarchy-menu.jsonc \
-        "$pkgdir/usr/share/obsbot-tiny3-linux/omarchy/omarchy-menu.jsonc"
+        "$pkgdir/usr/share/tiny-control/omarchy/omarchy-menu.jsonc"
 
     # Docs
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
