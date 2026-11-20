@@ -147,6 +147,8 @@ pub struct Status {
     pub tilt_deg: f64,
     pub zoom: i32,
     pub auto_exposure: bool,
+    /// The raw 60-byte vendor status block, for `status --raw` and `probe`.
+    pub raw: [u8; 60],
 }
 
 /// An open camera (control fd; reads do not wake a sleeping camera).
@@ -506,6 +508,11 @@ impl Device {
         self.fd.set_ctrl(controls::CID_EXPOSURE_ABSOLUTE, value)
     }
 
+    /// Raw vendor status block only (no UVC reads) — used by `probe`.
+    pub fn raw_status(&self) -> Result<[u8; 60]> {
+        self.fd.xu_get(XU_UNIT, SEL_STATUS)
+    }
+
     // --- status ---
 
     /// Read and decode the full status: vendor block + key UVC controls.
@@ -529,6 +536,7 @@ impl Device {
             tilt_deg: tilt as f64 / controls::ASEC_PER_DEG,
             zoom,
             auto_exposure: ae == controls::EXPOSURE_AUTO_MODE,
+            raw: s,
         })
     }
 }

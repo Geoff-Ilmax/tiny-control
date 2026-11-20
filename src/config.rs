@@ -34,6 +34,11 @@ pub struct Config {
     pub tracking: crate::TrackMode,
     pub hdr: Option<bool>,
     pub auto_wb: bool,
+    /// Last values set with tinyctl for settings whose camera readback is not
+    /// decoded yet. Shown by `status`; not enforced by the guard.
+    pub fov: Option<String>,
+    pub face_ae: Option<bool>,
+    pub track_speed: Option<String>,
 }
 
 impl Default for Config {
@@ -46,6 +51,9 @@ impl Default for Config {
             tracking: crate::TrackMode::Off,
             hdr: None,
             auto_wb: false,
+            fov: None,
+            face_ae: None,
+            track_speed: None,
         }
     }
 }
@@ -228,6 +236,15 @@ impl Config {
         if let Some(v) = m.get("auto_wb").and_then(|v| v.parse().ok()) {
             c.auto_wb = v;
         }
+        c.fov = m
+            .get("fov")
+            .filter(|v| matches!(v.as_str(), "wide" | "medium" | "narrow"))
+            .cloned();
+        c.face_ae = m.get("face_ae").and_then(|v| v.parse().ok());
+        c.track_speed = m
+            .get("track_speed")
+            .filter(|v| matches!(v.as_str(), "std" | "sport"))
+            .cloned();
         c
     }
 
@@ -456,6 +473,16 @@ mod tests {
         assert_eq!(f.alias_of("CAM1"), Some("desk"));
         assert_eq!(f.id_for_alias("DESK"), Some("CAM1"));
         assert_eq!(f.id_for_alias("nope"), None);
+    }
+
+    #[test]
+    fn last_set_display_settings_parse() {
+        let c = cfg("[camera CAM1]\nfov = narrow\nface_ae = true\ntrack_speed = sport\n");
+        assert_eq!(c.fov.as_deref(), Some("narrow"));
+        assert_eq!(c.face_ae, Some(true));
+        assert_eq!(c.track_speed.as_deref(), Some("sport"));
+        let c = cfg("fov = huge\ntrack_speed = warp");
+        assert_eq!((c.fov, c.track_speed), (None, None));
     }
 
     #[test]

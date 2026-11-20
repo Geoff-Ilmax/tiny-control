@@ -22,8 +22,8 @@ Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
 | Model | USB ID | Product string | Notes |
 |---|---|---|---|
 | Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
-| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; sleep/wake, tracking, pan/tilt, WB, HDR verified |
-| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; sleep/wake, tracking, pan/tilt, WB, HDR verified |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; all commands verified except face-AE / tracking speed |
+| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; all commands verified except face-AE / tracking speed |
 
 Model differences handled in code:
 
@@ -217,7 +217,7 @@ Live blob observed: `2e0100020000000100 01 78 0000 01 01 …`. Decoded offsets
 | `0x06` | HDR (bool) | ✅ reacts to the HDR TLV |
 | `0x18` | AI mode enable | ✅ `00` idle → `02` when human-tracking on |
 | `0x1c` | AI framing | ✅ tracks the submode |
-| `0x21` | tracking speed (0=std, 2=sport) | ⚠️ not exercised — `set_track_speed` is experimental |
+| `0x21` | tracking speed (0=std, 2=sport) | ⚠️ unconfirmed — no visible change on Tiny 2 / Tiny 3; `tinyctl` now checks this readback after `track speed` |
 
 **Reading the status block does not wake the camera.** It is a control GET, not
 a stream, so it can be read on a *sleeping* camera and leaves it asleep

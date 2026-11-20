@@ -200,14 +200,20 @@ const TINY3_LITE_VERIFIED: &[Feature] = &[
 ];
 
 /// Features confirmed on the Tiny 3 (ff02) and Tiny 2 (fef8) on real
-/// hardware: sleep, wake, power, status, info, track, pan, tilt, wb, hdr.
+/// hardware: sleep, wake, power, status, info, track, pan, tilt, zoom, wb,
+/// hdr, fov, exposure and the firmware auto-sleep timer. Face-AE and tracking
+/// speed are not confirmed (no visible effect observed yet).
 /// (power/status/info are reads and need no feature gate.)
 const TINY3_TINY2_VERIFIED: &[Feature] = &[
     Feature::Sleep,
+    Feature::AutoSleepTimer,
     Feature::Tracking(TrackMode::Off),
     Feature::Gimbal,
+    Feature::Zoom,
     Feature::WhiteBalance,
     Feature::Hdr,
+    Feature::Fov,
+    Feature::Exposure,
 ];
 
 pub static MODELS: &[Model] = &[
@@ -287,9 +293,8 @@ mod tests {
             ] {
                 assert_eq!(m.support(f), Support::Verified, "{pid} {f:?}");
             }
-            // Not part of the hardware test run: still untested.
-            assert_eq!(m.support(Feature::AutoSleepTimer), Support::Expected);
-            assert_eq!(m.support(Feature::Fov), Support::Expected);
+            assert_eq!(m.support(Feature::AutoSleepTimer), Support::Verified);
+            assert_eq!(m.support(Feature::Fov), Support::Verified);
         }
         assert!(!by_pid("abcd").is_verified());
     }
@@ -304,17 +309,7 @@ mod tests {
                 .map(|(f, _)| f.label())
                 .collect();
             println!("{pid}: untested = {untested:?}");
-            assert_eq!(
-                untested,
-                [
-                    "firmware auto-sleep timer",
-                    "tracking speed",
-                    "zoom",
-                    "field of view",
-                    "exposure",
-                    "face auto-exposure"
-                ]
-            );
+            assert_eq!(untested, ["tracking speed", "face auto-exposure"]);
         }
     }
 

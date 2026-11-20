@@ -41,7 +41,9 @@ POWER
     toggle                Sleep if awake, wake if asleep
 
 INFO
-    status                Show current state (control read; does NOT wake a sleeping camera)
+    status [--raw]        Show current state (control read; does NOT wake a sleeping camera)
+    probe fov|face-ae|track-speed
+                          Find which status byte reports a setting (cycles its values)
     info                  Serial number, UUID, model, device node
     power                 USB power state from sysfs (opens nothing)
     node                  Print the capture device path (opens nothing)
@@ -307,7 +309,8 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             }
             Ok(())
         }
-        "status" => cmd_status(cam, open()?, json),
+        "status" => cmd_status(cam, open()?, json, rest.iter().any(|a| a == "--raw")),
+        "probe" => cmd_probe(open()?, rest),
         "info" => cmd_info(cam, open()?, json),
         "track" => cmd_track(id, open()?, rest),
         "recenter" | "park" | "home" => open()?.recenter(),
@@ -330,11 +333,12 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             open()?.set_hdr(on)?;
             config::save_setting(id, "hdr", if on { "true" } else { "false" })
         }
-        "fov" => cmd_fov(open()?, rest),
+        "fov" => cmd_fov(id, open()?, rest),
         "exposure" => cmd_exposure(open()?, rest),
         "face-ae" => {
             let on = need_on_off(rest, "face-ae")?;
-            open()?.set_face_ae(on)
+            open()?.set_face_ae(on)?;
+            config::save_setting(id, "face_ae", if on { "true" } else { "false" })
         }
         "reset" => cmd_reset(id, open()?),
         other => Err(Error::Usage(format!("unknown command '{other}'"))),
@@ -354,7 +358,11 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             "sleep" | "wake" | "toggle" => {
                 (actual.asleep != (desired.power == "sleep")).then_some(Feature::Sleep)
             }
-            "track" if rest.first().map(String::as_str) != Some("speed") => {
+            "track" if rest.first().map(String::as_str) == Some("speed") => {
+                let want = desired.track_speed.as_deref() == Some("sport");
+                (actual.tracking_sport != want).then_some(Feature::TrackSpeed)
+            }
+            "track" => {
                 (actual.tracking != desired.tracking).then_some(Feature::Tracking(desired.tracking))
             }
             "hdr" => (desired.hdr != Some(actual.hdr)).then_some(Feature::Hdr),
@@ -544,8 +552,22 @@ fn cmd_power(cam: &Cam, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
+fn hex(b: &[u8]) -> String {
+    b.iter()
+        .map(|x| format!("{x:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
     let s = dev.status()?;
+    if raw && !json {
+        println!("camera      : {} ({})", cam.label(), cam.info.model.name);
+        for (i, row) in s.raw.chunks(16).enumerate() {
+            println!("  {:#04x}: {}", i * 16, hex(row));
+        }
+        return Ok(());
+    }
     let desired = config::Config::load_for(&cam.id);
     let (pan_min, pan_max) = dev.gimbal_range_deg(controls::CID_PAN_ABSOLUTE);
     let (tilt_min, tilt_max) = dev.gimbal_range_deg(controls::CID_TILT_ABSOLUTE);
@@ -554,7 +576,8 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
             "{{{},\"asleep\":{},\"tracking\":\"{}\",\"tracking_sport\":{},\"hdr\":{},\
              \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
              \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
-             \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}]}}",
+             \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}],\
+             \"track_speed\":\"{}\",\"fov_last_set\":{},\"face_ae_last_set\":{}{}}}",
             json_camera(cam),
             s.asleep,
             json_str(s.tracking.label()),
@@ -572,7 +595,18 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
             pan_min,
             pan_max,
             tilt_min,
-            tilt_max
+            tilt_max,
+            if s.tracking_sport { "sport" } else { "std" },
+            json_opt(desired.fov.as_deref()),
+            desired
+                .face_ae
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "null".into()),
+            if raw {
+                format!(",\"raw\":\"{}\"", hex(&s.raw))
+            } else {
+                String::new()
+            }
         );
     } else {
         println!("camera      : {} ({})", cam.label(), cam.info.model.name);
@@ -584,10 +618,10 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
             "sleep timer : {} seconds (0 = disabled)",
             s.auto_sleep_seconds
         );
+        println!("tracking    : {}", s.tracking.label());
         println!(
-            "tracking    : {}{}",
-            s.tracking.label(),
-            if s.tracking_sport { " (sport)" } else { "" }
+            "track speed : {}",
+            if s.tracking_sport { "sport" } else { "std" }
         );
         println!("hdr         : {}", onoff(s.hdr));
         println!(
@@ -602,12 +636,103 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
             "exposure    : {}",
             if s.auto_exposure { "auto" } else { "manual" }
         );
+        // Not decoded from the camera yet (see `tinyctl probe`): show the
+        // last value tinyctl set, and say so.
+        println!(
+            "fov         : {}",
+            desired
+                .fov
+                .as_deref()
+                .map(|f| format!("{f} (last set; not read from camera)"))
+                .unwrap_or_else(|| "unknown (not set with tinyctl)".into())
+        );
+        println!(
+            "face AE     : {}",
+            desired
+                .face_ae
+                .map(|b| format!("{} (last set; not read from camera)", onoff(b)))
+                .unwrap_or_else(|| "unknown (not set with tinyctl)".into())
+        );
         println!(
             "gimbal      : pan {:.1}° ({pan_min:.0}..{pan_max:.0}), tilt {:.1}° ({tilt_min:.0}..{tilt_max:.0}), zoom {}",
             s.pan_deg, s.tilt_deg, s.zoom
         );
     }
     Ok(())
+}
+
+/// Find where a setting lives in the 60-byte status block: set each value in
+/// turn, snapshot the block, and print the bytes that track the value. Uses
+/// only the normal SET for that setting plus status reads (GET_CUR).
+fn cmd_probe(dev: &Device, rest: &[String]) -> Result<()> {
+    type Setter = Box<dyn Fn(&Device) -> Result<()>>;
+    let what = rest.first().map(String::as_str).unwrap_or("");
+    let steps: Vec<(&str, Setter)> = match what {
+        "fov" => [("wide", 0u8), ("medium", 1), ("narrow", 2), ("wide", 0)]
+            .into_iter()
+            .map(|(n, l)| (n, Box::new(move |d: &Device| d.set_fov(l)) as Setter))
+            .collect(),
+        "face-ae" => [("off", false), ("on", true), ("off", false), ("on", true)]
+            .into_iter()
+            .map(|(n, v)| (n, Box::new(move |d: &Device| d.set_face_ae(v)) as Setter))
+            .collect(),
+        "track-speed" => [
+            ("std", false),
+            ("sport", true),
+            ("std", false),
+            ("sport", true),
+        ]
+        .into_iter()
+        .map(|(n, v)| {
+            (
+                n,
+                Box::new(move |d: &Device| d.set_track_speed(v)) as Setter,
+            )
+        })
+        .collect(),
+        _ => return Err(Error::Usage("probe fov|face-ae|track-speed".into())),
+    };
+    if what == "face-ae" {
+        dev.set_auto_exposure(true)?;
+    }
+    let mut snaps: Vec<(&str, [u8; 60])> = Vec::new();
+    for (name, set) in &steps {
+        set(dev)?;
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        snaps.push((name, dev.raw_status()?));
+    }
+    let hits = tracking_offsets(&snaps);
+    println!("probe {what} on the {}:", dev.model().name);
+    if hits.is_empty() {
+        println!("  no status byte follows this setting (it may not be reported, or not applied)");
+    }
+    for off in hits {
+        let vals: Vec<String> = snaps
+            .iter()
+            .map(|(n, s)| format!("{n}={:#04x}", s[off]))
+            .collect();
+        println!("  offset {off:#04x}: {}", vals.join("  "));
+    }
+    let last = steps.last().map(|(n, _)| *n).unwrap_or("");
+    println!("(left at {what} = {last})");
+    Ok(())
+}
+
+/// Offsets whose byte differs between values and is identical every time the
+/// same value is set — i.e. bytes that report the setting.
+fn tracking_offsets(snaps: &[(&str, [u8; 60])]) -> Vec<usize> {
+    (0..60)
+        .filter(|&off| {
+            let varies = snaps.iter().any(|(_, s)| s[off] != snaps[0].1[off]);
+            let consistent = snaps.iter().all(|(n, s)| {
+                snaps
+                    .iter()
+                    .filter(|(m, _)| m == n)
+                    .all(|(_, t)| t[off] == s[off])
+            });
+            varies && consistent
+        })
+        .collect()
 }
 
 fn cmd_info(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
@@ -660,11 +785,13 @@ fn cmd_track(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
     }
     if arg == "speed" {
         let s = rest.get(1).map(String::as_str);
-        return match s {
-            Some("sport") | Some("fast") => dev.set_track_speed(true),
-            Some("std") | Some("standard") | Some("normal") => dev.set_track_speed(false),
-            _ => Err(Error::Usage("track speed std|sport".into())),
+        let sport = match s {
+            Some("sport") | Some("fast") => true,
+            Some("std") | Some("standard") | Some("normal") => false,
+            _ => return Err(Error::Usage("track speed std|sport".into())),
         };
+        dev.set_track_speed(sport)?;
+        return config::save_setting(id, "track_speed", if sport { "sport" } else { "std" });
     }
     let mode = TrackMode::from_str(arg)
         .ok_or_else(|| Error::Usage(format!("unknown tracking mode '{arg}'")))?;
@@ -746,14 +873,15 @@ fn cmd_wb(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
     }
 }
 
-fn cmd_fov(dev: &Device, rest: &[String]) -> Result<()> {
-    let level = match rest.first().map(String::as_str) {
-        Some("wide") => 0,
-        Some("medium") | Some("med") => 1,
-        Some("narrow") => 2,
+fn cmd_fov(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
+    let (level, name) = match rest.first().map(String::as_str) {
+        Some("wide") => (0, "wide"),
+        Some("medium") | Some("med") => (1, "medium"),
+        Some("narrow") => (2, "narrow"),
         _ => return Err(Error::Usage("fov wide|medium|narrow".into())),
     };
-    dev.set_fov(level)
+    dev.set_fov(level)?;
+    config::save_setting(id, "fov", name)
 }
 
 fn cmd_exposure(dev: &Device, rest: &[String]) -> Result<()> {
@@ -830,5 +958,21 @@ fn onoff(b: bool) -> &'static str {
         "on"
     } else {
         "off"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn probe_finds_only_bytes_that_follow_the_value() {
+        let mut a = [0u8; 60];
+        let mut b = a;
+        b[0x2a] = 2; // follows the value
+        let mut a2 = a;
+        a2[0x30] = 9; // noise: changes between two reads of the same value
+        b[0x30] = 9;
+        a[0x31] = 1; // noise
+        let snaps = [("x", a), ("y", b), ("x", a2), ("y", b)];
+        assert_eq!(super::tracking_offsets(&snaps), [0x2a]);
     }
 }
