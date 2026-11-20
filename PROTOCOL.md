@@ -161,8 +161,8 @@ not. The Tiny 3 reportedly discards preset
 
   | Byte(s) | Field | P1 | P2 | P3 | Notes |
   |---|---|---|---|---|---|
-  | 0 | (Tiny 2 AI mode) | `ff` | `ff` | `ff` | unused on the Tiny 3 |
-  | 1 | AI mode? | `06` | `05` | `07` | P1 voice+single, P2 desk, P3 voice+group — **not decoded** |
+  | 0 | human tracking | `ff` | `ff` | `ff` | `0b` single, `0c` group, `ff` disabled (round 2) |
+  | 1 | tracking speed | `06` | `05` | `07` | `05` slow, `06` medium, `07` fast (round 2: all slow = `05`) |
   | 2 / 3 | auto focus / AF mode | `01`/`01` | `01`/`00` | `00`/`01` | on/off; `01` face, `00` global |
   | 4–5 | manual focus u16 | 0 | 0 | 52 | slider ~50% |
   | 6 / 7 | auto exposure / AE mode | `01`/`01` | `01`/`00` | `00`/`01` | same as Tiny 2 |
@@ -174,12 +174,19 @@ not. The Tiny 3 reportedly discards preset
   | 16 | image adjust present | `01` | `01` | `00` | P3 has no image values |
   | 17 / 19 | blur on / level | `01`/`02` | `00`/`02` | `00`/`00` | |
   | 20–23 | contrast, sat, sharp, hue | 46 47 48 49 | 36 37 38 39 | `ff`×4 | |
-  | 24 | ? | `00` | `00` | `01` | P3 only: group or auto zoom full body |
-  | 25 | ? | `02` | `00` | `02` | on with human tracking? |
+  | 24 | auto zoom | `00` | `00` | `01` | `00` off, `01` full body (other framings not seen) |
+  | 25 | AI mode | `02` | `00` | `02` | `00` desk, `01` whiteboard, `02` voice, `ff` disabled |
   | 27, 29 | constant | `8d`, `a2` | | | |
   | 31 / 32 | AWB shift B-A / G-M | `26`/`2b` | `18`/`10` | `1c`/`1c` | value = (byte − 28) / 4: 2.5/3.75, −1/−3, 0/0 |
   | 33 / 34 | ISO range lower / upper | `ff`/`ff` | `02`/`07` | `ff`/`ff` | index 1 = 100 … 8 = 12800 (P2 200–6400); `ff` = full range |
 
+  Human tracking and AI mode exclude each other in OBSBOT Center: in round 1
+  P1 and P3 asked for both, and voice won (byte 0 `ff`). Round 2 (single /
+  group / whiteboard, slow, auto zoom off, everything else unset) separated
+  bytes 0, 1, 24 and 25. Controls a preset leaves unset are stored as `ff`.
+  `tinyctl preset recall` on the Tiny 3 applies human tracking (single →
+  normal, group), desk, whiteboard, focus, exposure, WB and the image values;
+  voice, tracking speed, auto zoom, ISO and WB shift have no USB command.
 - **Tiny 3 boot pose** (38 bytes, P2 as initial state):
   `01 00 00 00 | 00 | −4.58 | −3.10 | 0 | 1.66 | 0.5 | 0.5 | 0.6024 | 1.0 | 00`
   — slot index, pad, unaligned f32 yaw, pitch, roll, zoom, then what looks

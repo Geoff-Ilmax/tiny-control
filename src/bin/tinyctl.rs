@@ -864,8 +864,29 @@ fn actions_summary(a: &tiny_control::device::PresetActions) -> String {
         Some(m) => format!("tracking {}", m.label()),
         None => format!("tracking mode {:#04x}", a.tracking_raw),
     }];
+    if a.voice {
+        parts[0] = "AI mode voice".into();
+    }
     if let Some(s) = a.sport {
         parts.push(if s { "motion speed" } else { "standard speed" }.into());
+    }
+    if let Some(s) = a.speed_name {
+        parts.push(format!("{s} speed"));
+    }
+    match a.auto_zoom {
+        Some(0) => parts.push("auto zoom off".into()),
+        Some(1) => parts.push("auto zoom full body".into()),
+        Some(z) => parts.push(format!("auto zoom {z:#04x}")),
+        None => {}
+    }
+    if let Some(f) = a.manual_focus {
+        parts.push(format!("manual focus {f}"));
+    }
+    if let Some(iso) = a.iso {
+        parts.push(format!("ISO {iso}"));
+    }
+    if let Some((lo, hi)) = a.iso_range {
+        parts.push(format!("ISO {lo}-{hi}"));
     }
     if let Some(af) = onoff_opt(a.auto_focus) {
         parts.push(format!("AF {af}{}", target(a.face_focus)));
@@ -881,6 +902,11 @@ fn actions_summary(a: &tiny_control::device::PresetActions) -> String {
         (Some(true), _) => parts.push("WB auto".into()),
         (Some(false), Some(t)) => parts.push(format!("WB {t}K")),
         _ => {}
+    }
+    if let Some((ba, gm)) = a.wb_shift {
+        if ba != 0.0 || gm != 0.0 {
+            parts.push(format!("WB shift {ba:+} / {gm:+}"));
+        }
     }
     match (a.blur, a.blur_level) {
         (Some(true), Some(l)) => parts.push(format!("blur {l}")),
@@ -951,6 +977,12 @@ fn apply_actions(
             dev.fd().set_ctrl(controls::CID_FOCUS_AUTO, af as i32),
         );
     }
+    if let Some(f) = a.manual_focus {
+        note(
+            "manual focus",
+            dev.fd().set_ctrl(controls::CID_FOCUS_ABSOLUTE, f as i32),
+        );
+    }
     if let Some(ae) = a.auto_exposure {
         note("auto exposure", dev.set_auto_exposure(ae));
         if ae {
@@ -986,10 +1018,23 @@ fn apply_actions(
             }
             note("tracking mode", r);
         }
+        None if a.voice => notes.push("AI mode voice (no known command)".into()),
         None => notes.push(format!(
             "tracking mode {:#04x} (not decoded yet)",
             a.tracking_raw
         )),
+    }
+    if a.speed_name.is_some() {
+        notes.push("tracking speed (not settable over USB on this model)".into());
+    }
+    if a.auto_zoom.is_some_and(|z| z != 0) {
+        notes.push("auto zoom (not settable over USB on this model)".into());
+    }
+    if a.iso.is_some() || a.iso_range.is_some() {
+        notes.push("ISO (no known command)".into());
+    }
+    if a.wb_shift.is_some_and(|(b, g)| b != 0.0 || g != 0.0) {
+        notes.push("white balance shift (no known command)".into());
     }
     // Stored by OBSBOT Center but no verified command exists yet.
     if a.auto_focus == Some(true) && a.face_focus.is_some() {
@@ -1031,6 +1076,10 @@ fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()>
                 let items: Vec<String> = slots
                     .iter()
                     .map(|s| match s.pose {
+                        None if s.occupied => format!(
+                            "{{\"slot\":{},\"occupied\":true,\"position_reported\":false}}",
+                            s.slot
+                        ),
                         Some(p) => format!(
                             "{{\"slot\":{},\"occupied\":true,\"name\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\"zoom_ratio\":{:.2},\"power_on\":{}}}",
                             s.slot,
@@ -1075,9 +1124,12 @@ fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()>
                             ""
                         }
                     ),
+                    None if s.occupied => {
+                        println!("  {}  (position not reported by this model)", s.slot)
+                    }
                     None => println!("  {}  (empty)", s.slot),
                 }
-                if s.pose.is_some() {
+                if s.occupied {
                     if let Ok(a) = dev.preset_actions(s.slot) {
                         println!("       {}", actions_summary(&a));
                     }
@@ -1106,8 +1158,10 @@ fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()>
         }
         Some("recall") | Some("load") | Some("goto") => {
             let slot = need_slot(rest, "preset recall <1|2|3>")?;
-            let p = dev.preset_recall(slot)?;
-            println!("recalled preset {slot} ({})", pose_str(&p));
+            match dev.preset_recall(slot)? {
+                Some(p) => println!("recalled preset {slot} ({})", pose_str(&p)),
+                None => println!("recalled preset {slot}"),
+            }
             // The camera only moves on a recall; OBSBOT Center applies the
             // preset's "Additional settings" itself, so do the same here.
             match dev.preset_actions(slot) {
