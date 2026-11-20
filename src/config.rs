@@ -1,13 +1,31 @@
-//! Tiny config file shared by `t3ctl` and `t3-wb-guard`.
+//! Config file shared by `tinyctl` and `tiny-guard`.
 //!
-//! Format is a minimal `key = value` INI-ish file (no external deps). Lives at
-//! `$XDG_CONFIG_HOME/obsbot-tiny3/config` (default `~/.config/obsbot-tiny3/config`).
-//! Gimbal presets live alongside it as `presets/<name>`.
+//! Format is a minimal INI-ish file (no external deps). Keys before any section
+//! are defaults for every camera; a `[camera <ID>]` section overrides them for
+//! one camera, where `<ID>` is the camera's stable id (its vendor serial number,
+//! or `port-<usb path>` when the serial cannot be read):
+//!
+//! ```text
+//! wb_temp = 4000          # default for all cameras
+//!
+//! [camera RMOWUHI3111PLN]
+//! alias = desk
+//! tracking = upper-body
+//! wb_temp = 4500
+//! ```
+//!
+//! Lives at `$XDG_CONFIG_HOME/tiny-control/config` (default
+//! `~/.config/tiny-control/config`), falling back to `/etc/tiny-control/config`.
+//! Gimbal presets live alongside it as `presets/<ID>/<name>`.
 
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub const APP_DIR: &str = "tiny-control";
+pub const SYSTEM_CONFIG: &str = "/etc/tiny-control/config";
+
+/// Effective settings for one camera (defaults ⊕ global keys ⊕ its section).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// Target white-balance temperature the guard re-pins to (Kelvin).
@@ -21,7 +39,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         // 4000K is the tuned baseline for a green-walled office; auto WB drowns
-        // in green rooms on this camera. Overridable in the config file.
+        // in green rooms on these cameras. Overridable in the config file.
         Config {
             wb_temp: 4000,
             power: "auto".into(),
@@ -32,38 +50,165 @@ impl Default for Config {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
+fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    if let Ok(x) = std::env::var(var) {
         if !x.is_empty() {
-            return PathBuf::from(x).join("obsbot-tiny3");
+            return PathBuf::from(x).join(APP_DIR);
         }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-    PathBuf::from(home).join(".config/obsbot-tiny3")
+    PathBuf::from(home).join(fallback).join(APP_DIR)
+}
+
+pub fn config_dir() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
+/// Persistent per-user state that is not configuration (the selected camera).
+pub fn state_dir() -> PathBuf {
+    xdg_dir("XDG_STATE_HOME", ".local/state")
+}
+
+/// Volatile cache (cleared on reboot when XDG_RUNTIME_DIR is a tmpfs).
+pub fn runtime_dir() -> PathBuf {
+    match std::env::var("XDG_RUNTIME_DIR") {
+        Ok(x) if !x.is_empty() => PathBuf::from(x).join(APP_DIR),
+        _ => state_dir(),
+    }
 }
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config")
 }
 
-fn parse(text: &str) -> BTreeMap<String, String> {
-    let mut m = BTreeMap::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+type Map = BTreeMap<String, String>;
+
+/// The whole config file: global keys plus one section per camera id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigFile {
+    pub global: Map,
+    pub cameras: BTreeMap<String, Map>,
+}
+
+fn strip_comment(line: &str) -> &str {
+    match line.find(" #") {
+        Some(i) => &line[..i],
+        None => line,
+    }
+}
+
+impl ConfigFile {
+    pub fn parse(text: &str) -> Self {
+        let mut f = ConfigFile::default();
+        let mut section: Option<String> = None;
+        for raw in text.lines() {
+            let line = strip_comment(raw).trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(h) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = h
+                    .trim()
+                    .strip_prefix("camera")
+                    .map(|id| id.trim().to_string())
+                    .filter(|id| valid_id(id));
+                if let Some(id) = &section {
+                    f.cameras.entry(id.clone()).or_default();
+                }
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let (k, v) = (k.trim().to_string(), v.trim().to_string());
+                match &section {
+                    Some(id) => {
+                        f.cameras.get_mut(id).unwrap().insert(k, v);
+                    }
+                    None => {
+                        f.global.insert(k, v);
+                    }
+                }
+            }
         }
-        if let Some((k, v)) = line.split_once('=') {
-            m.insert(k.trim().to_string(), v.trim().to_string());
+        f
+    }
+
+    pub fn render(&self) -> String {
+        let mut out = String::from("# tiny-control configuration (rewritten by tinyctl).\n");
+        for (k, v) in &self.global {
+            out.push_str(&format!("{k} = {v}\n"));
+        }
+        for (id, m) in &self.cameras {
+            out.push_str(&format!("\n[camera {id}]\n"));
+            for (k, v) in m {
+                out.push_str(&format!("{k} = {v}\n"));
+            }
+        }
+        out
+    }
+
+    fn read(path: &std::path::Path) -> std::io::Result<Option<ConfigFile>> {
+        match std::fs::read_to_string(path) {
+            Ok(t) => Ok(Some(Self::parse(&t))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
         }
     }
-    m
+
+    /// The per-user file if it exists, else the system file, else empty.
+    pub fn load() -> ConfigFile {
+        [config_path(), PathBuf::from(SYSTEM_CONFIG)]
+            .iter()
+            .find_map(|p| Self::read(p).ok().flatten())
+            .unwrap_or_default()
+    }
+
+    /// Effective settings for camera `id`.
+    pub fn camera(&self, id: &str) -> Config {
+        let mut m = self.global.clone();
+        if let Some(s) = self.cameras.get(id) {
+            m.extend(s.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        Config::from_map(&m)
+    }
+
+    pub fn alias_of(&self, id: &str) -> Option<&str> {
+        self.cameras.get(id)?.get("alias").map(String::as_str)
+    }
+
+    /// Camera id whose alias is `alias` (case-insensitive).
+    pub fn id_for_alias(&self, alias: &str) -> Option<&str> {
+        self.cameras
+            .iter()
+            .find(|(_, m)| {
+                m.get("alias")
+                    .is_some_and(|a| a.eq_ignore_ascii_case(alias))
+            })
+            .map(|(id, _)| id.as_str())
+    }
+}
+
+/// Camera ids become section headers and directory names.
+pub fn valid_id(id: &str) -> bool {
+    // Must start alphanumeric so an id can never be `.` / `..` as a path part.
+    id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Aliases must be usable on a command line and in a keybinding, and must not
+/// look like the other selector forms (an index, a path, `all`, `selected`).
+pub fn valid_alias(a: &str) -> bool {
+    valid_name(a)
+        && !a.bytes().all(|b| b.is_ascii_digit())
+        && !matches!(a.to_ascii_lowercase().as_str(), "all" | "selected")
+        && !a.starts_with("port-")
 }
 
 impl Config {
-    fn from_text(text: &str) -> Self {
+    fn from_map(m: &Map) -> Self {
         let mut c = Self::default();
-        let m = parse(text);
         if let Some(v) = m.get("wb_temp").and_then(|s| s.parse::<i32>().ok()) {
             c.wb_temp = v.clamp(crate::controls::WB_TEMP_MIN, crate::controls::WB_TEMP_MAX);
         }
@@ -90,25 +235,90 @@ impl Config {
         self.power == "awake" || (self.power == "auto" && active)
     }
 
-    /// Load config, falling back to defaults for anything missing/absent.
-    ///
-    /// Search order: `$XDG_CONFIG_HOME/obsbot-tiny3/config` (per-user), then
-    /// `/etc/obsbot-tiny3/config` (system-wide, used by the root/udev context).
-    /// The first file that exists wins; missing keys keep their defaults.
-    pub fn load() -> Config {
-        let mut c = Config::default();
-        let candidates = [config_path(), PathBuf::from("/etc/obsbot-tiny3/config")];
-        for path in candidates {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                c = Self::from_text(&text);
-                break;
-            }
-        }
-        c
+    /// Effective settings for camera `id`, from the current config file.
+    pub fn load_for(id: &str) -> Config {
+        ConfigFile::load().camera(id)
     }
 }
 
-// --- gimbal presets (pan/tilt/zoom triples stored by name) ---
+/// Caller holds PolicyLock. Read-modify-write the per-user file atomically,
+/// seeding it from the system file the first time.
+fn update(f: impl FnOnce(&mut ConfigFile) -> Result<()>) -> Result<()> {
+    let path = config_path();
+    let mut file = match ConfigFile::read(&path)? {
+        Some(c) => c,
+        None => ConfigFile::read(std::path::Path::new(SYSTEM_CONFIG))?.unwrap_or_default(),
+    };
+    f(&mut file)?;
+    std::fs::create_dir_all(config_dir())?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, file.render())?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Caller holds PolicyLock. Save one setting for one camera.
+pub fn save_setting(id: &str, key: &str, value: &str) -> Result<()> {
+    if !valid_id(id) {
+        return Err(Error::Config(format!("invalid camera id '{id}'")));
+    }
+    update(|f| {
+        f.cameras
+            .entry(id.to_string())
+            .or_default()
+            .insert(key.into(), value.into());
+        Ok(())
+    })
+}
+
+/// Caller holds PolicyLock. Name a camera (or clear its name with `None`).
+pub fn set_alias(id: &str, alias: Option<&str>) -> Result<()> {
+    if let Some(a) = alias {
+        if !valid_alias(a) {
+            return Err(Error::Usage(format!(
+                "invalid alias '{a}' (letters, digits, - and _; not all digits, not 'all'/'selected')"
+            )));
+        }
+    }
+    update(|f| {
+        if let Some(a) = alias {
+            if let Some(other) = f.id_for_alias(a).filter(|o| *o != id) {
+                return Err(Error::Usage(format!(
+                    "alias '{a}' is already used by camera {other}"
+                )));
+            }
+        }
+        let section = f.cameras.entry(id.to_string()).or_default();
+        match alias {
+            Some(a) => section.insert("alias".into(), a.into()),
+            None => section.remove("alias"),
+        };
+        Ok(())
+    })
+}
+
+// --- selected camera (what the bar widget and keybindings act on) ---
+
+fn selected_path() -> PathBuf {
+    state_dir().join("selected")
+}
+
+pub fn selected() -> Option<String> {
+    std::fs::read_to_string(selected_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| valid_id(s))
+}
+
+pub fn set_selected(id: &str) -> Result<()> {
+    std::fs::create_dir_all(state_dir())?;
+    let tmp = selected_path().with_extension("tmp");
+    std::fs::write(&tmp, format!("{id}\n"))?;
+    std::fs::rename(tmp, selected_path())?;
+    Ok(())
+}
+
+// --- gimbal presets (pan/tilt/zoom triples stored by name, per camera) ---
 
 #[derive(Debug, Clone, Copy)]
 pub struct Preset {
@@ -117,8 +327,8 @@ pub struct Preset {
     pub zoom: i32,
 }
 
-fn presets_dir() -> PathBuf {
-    config_dir().join("presets")
+fn presets_dir(id: &str) -> PathBuf {
+    config_dir().join("presets").join(id)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -129,13 +339,13 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-pub fn save_preset(name: &str, p: Preset) -> Result<()> {
+pub fn save_preset(id: &str, name: &str, p: Preset) -> Result<()> {
     if !valid_name(name) {
         return Err(Error::Usage(format!(
             "invalid preset name '{name}' (use letters, digits, - and _)"
         )));
     }
-    let dir = presets_dir();
+    let dir = presets_dir(id);
     std::fs::create_dir_all(&dir)?;
     let body = format!(
         "pan_deg = {}\ntilt_deg = {}\nzoom = {}\n",
@@ -145,13 +355,13 @@ pub fn save_preset(name: &str, p: Preset) -> Result<()> {
     Ok(())
 }
 
-pub fn load_preset(name: &str) -> Result<Preset> {
+pub fn load_preset(id: &str, name: &str) -> Result<Preset> {
     if !valid_name(name) {
         return Err(Error::Usage(format!("invalid preset name '{name}'")));
     }
-    let text = std::fs::read_to_string(presets_dir().join(name))
-        .map_err(|_| Error::Config(format!("no preset named '{name}'")))?;
-    let m = parse(&text);
+    let text = std::fs::read_to_string(presets_dir(id).join(name))
+        .map_err(|_| Error::Config(format!("no preset named '{name}' for this camera")))?;
+    let m = ConfigFile::parse(&text).global;
     Ok(Preset {
         pan_deg: m.get("pan_deg").and_then(|s| s.parse().ok()).unwrap_or(0.0),
         tilt_deg: m
@@ -162,9 +372,9 @@ pub fn load_preset(name: &str) -> Result<Preset> {
     })
 }
 
-pub fn list_presets() -> Vec<String> {
+pub fn list_presets(id: &str) -> Vec<String> {
     let mut names = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(presets_dir()) {
+    if let Ok(entries) = std::fs::read_dir(presets_dir(id)) {
         for e in entries.flatten() {
             names.push(e.file_name().to_string_lossy().to_string());
         }
@@ -201,57 +411,69 @@ impl Drop for PolicyLock {
     }
 }
 
-/// Caller holds PolicyLock. Preserve unrelated keys and replace atomically.
-pub fn save_setting(key: &str, value: &str) -> Result<()> {
-    let path = config_path();
-    let mut values = parse(&std::fs::read_to_string(&path).or_else(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            match std::fs::read_to_string("/etc/obsbot-tiny3/config") {
-                Ok(s) => Ok(s),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-                Err(e) => Err(e),
-            }
-        } else {
-            Err(e)
-        }
-    })?);
-    values.insert(key.into(), value.into());
-    let body: String = values.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(tmp, path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg(text: &str) -> Config {
+        ConfigFile::parse(text).camera("CAM1")
+    }
+
     #[test]
     fn explicit_sleep_wins_over_active_calls() {
         for active in [true, false] {
-            assert!(!Config::from_text("power = sleep").keep_awake(active));
-            assert!(Config::from_text("power = awake").keep_awake(active));
-            assert_eq!(Config::from_text("power = auto").keep_awake(active), active);
+            assert!(!cfg("power = sleep").keep_awake(active));
+            assert!(cfg("power = awake").keep_awake(active));
+            assert_eq!(cfg("power = auto").keep_awake(active), active);
         }
     }
+
     #[test]
     fn legacy_config_and_invalid_values_are_safe() {
-        let c = Config::from_text("wb_temp = 4000");
+        let c = cfg("wb_temp = 4000");
         assert!(!c.auto_wb);
         assert_eq!(c.tracking, crate::TrackMode::Off);
         assert_eq!(c.power, "auto");
-        let c = Config::from_text("power = nonsense\ntracking = nonsense\nwb_temp = 100000");
+        let c = cfg("power = nonsense\ntracking = nonsense\nwb_temp = 100000");
         assert_eq!(c.power, "auto");
         assert_eq!(c.tracking, crate::TrackMode::Off);
         assert_eq!(c.wb_temp, 10000);
     }
+
     #[test]
-    fn explicit_wb_auto_and_tracking_survive_reload() {
-        let c =
-            Config::from_text("auto_wb = true\ntracking = upper-body\nhdr = false\npower = awake");
-        assert!(c.auto_wb);
-        assert_eq!(c.tracking, crate::TrackMode::UpperBody);
-        assert_eq!(c.hdr, Some(false));
-        assert!(c.keep_awake(false));
+    fn camera_sections_override_globals_independently() {
+        let f = ConfigFile::parse(
+            "wb_temp = 4000\npower = auto\n\n[camera CAM1]\nalias = desk\nwb_temp = 4500 # warmer\ntracking = upper-body\n\n[camera port-1-4.4]\npower = sleep\n",
+        );
+        let a = f.camera("CAM1");
+        assert_eq!((a.wb_temp, a.power.as_str()), (4500, "auto"));
+        assert_eq!(a.tracking, crate::TrackMode::UpperBody);
+        let b = f.camera("port-1-4.4");
+        assert_eq!((b.wb_temp, b.power.as_str()), (4000, "sleep"));
+        assert_eq!(b.tracking, crate::TrackMode::Off);
+        // A camera with no section gets the globals.
+        assert_eq!(f.camera("OTHER").wb_temp, 4000);
+        assert_eq!(f.alias_of("CAM1"), Some("desk"));
+        assert_eq!(f.id_for_alias("DESK"), Some("CAM1"));
+        assert_eq!(f.id_for_alias("nope"), None);
+    }
+
+    #[test]
+    fn render_round_trips() {
+        let f =
+            ConfigFile::parse("wb_temp = 4000\n[camera A]\nalias = x\n[camera B]\nhdr = true\n");
+        assert_eq!(ConfigFile::parse(&f.render()), f);
+    }
+
+    #[test]
+    fn ids_and_aliases_are_validated() {
+        assert!(valid_id("RMOWUHI3111PLN") && valid_id("port-1-4.4"));
+        for bad in ["a b", "../x", "..", ".hidden", "", "a/b"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+        assert!(valid_alias("desk") && valid_alias("cam_2"));
+        for bad in ["1", "all", "Selected", "port-x", "has space", "/dev/video0"] {
+            assert!(!valid_alias(bad), "{bad}");
+        }
     }
 }

@@ -6,7 +6,7 @@
 //! while a fd is held. (Starting a capture *stream* additionally wakes the
 //! camera from vendor sleep — LED on, gimbal live.) Callers that must let the
 //! camera sleep while idle (the WB guard) therefore construct no [`VideoFd`]
-//! until an app is already holding the camera awake. See `t3-wb-guard`.
+//! until an app is already holding the camera awake. See `tiny-guard`.
 
 use crate::error::{Error, Result};
 use std::os::unix::io::RawFd;
@@ -20,6 +20,8 @@ const UVCIOC_CTRL_QUERY: libc::c_ulong = 0xC010_7521;
 const VIDIOC_G_CTRL: libc::c_ulong = 0xC008_561B;
 // VIDIOC_S_CTRL = _IOWR('V', 28, struct v4l2_control {8 bytes}); nr 28 = 0x1C
 const VIDIOC_S_CTRL: libc::c_ulong = 0xC008_561C;
+// VIDIOC_QUERYCTRL = _IOWR('V', 36, struct v4l2_queryctrl {68 bytes}); nr 36 = 0x24
+const VIDIOC_QUERYCTRL: libc::c_ulong = 0xC044_5624;
 
 // UVC XU query selectors (uvcvideo.h)
 pub const UVC_SET_CUR: u8 = 0x01;
@@ -46,6 +48,30 @@ struct UvcXuControlQuery {
 struct V4l2Control {
     id: u32,
     value: i32,
+}
+
+/// struct v4l2_queryctrl — 68 bytes, no padding.
+#[repr(C)]
+struct V4l2QueryCtrl {
+    id: u32,
+    kind: u32,
+    name: [u8; 32],
+    minimum: i32,
+    maximum: i32,
+    step: i32,
+    default_value: i32,
+    flags: u32,
+    reserved: [u32; 2],
+}
+
+/// The range a standard control accepts on *this* camera. Models differ (the
+/// Tiny 2 and Tiny 3 gimbals do not share limits), so ranges are queried from
+/// the device instead of hardcoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CtrlRange {
+    pub min: i32,
+    pub max: i32,
+    pub step: i32,
 }
 
 /// An open handle to a camera video node. Dropping it closes the fd.
@@ -132,10 +158,43 @@ impl VideoFd {
         }
         Ok(())
     }
+
+    /// VIDIOC_QUERYCTRL — the min/max/step a standard control accepts.
+    pub fn query_ctrl(&self, id: u32) -> Result<CtrlRange> {
+        let mut q = V4l2QueryCtrl {
+            id,
+            kind: 0,
+            name: [0; 32],
+            minimum: 0,
+            maximum: 0,
+            step: 0,
+            default_value: 0,
+            flags: 0,
+            reserved: [0; 2],
+        };
+        let r = unsafe { libc::ioctl(self.fd, VIDIOC_QUERYCTRL as _, &mut q) };
+        if r < 0 {
+            return Err(Error::Io(std::io::Error::last_os_error()));
+        }
+        Ok(CtrlRange {
+            min: q.minimum,
+            max: q.maximum,
+            step: q.step,
+        })
+    }
 }
 
 impl Drop for VideoFd {
     fn drop(&mut self) {
         unsafe { libc::close(self.fd) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn queryctrl_layout_matches_the_kernel_abi() {
+        assert_eq!(std::mem::size_of::<super::V4l2QueryCtrl>(), 68);
+        assert_eq!((super::VIDIOC_QUERYCTRL >> 16) & 0x3fff, 68);
     }
 }

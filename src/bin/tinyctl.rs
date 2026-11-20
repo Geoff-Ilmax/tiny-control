@@ -1,0 +1,778 @@
+//! tinyctl — command-line control for OBSBOT Tiny 2 / Tiny 3 series webcams,
+//! one or several at a time.
+
+use std::process::ExitCode;
+use tiny_control::camera::{self, Cam};
+use tiny_control::config::{self, Preset};
+use tiny_control::model::Feature;
+use tiny_control::{controls, discover, Device, Error, Result, TrackMode};
+
+const USAGE: &str = "\
+tinyctl — control OBSBOT Tiny 2 / Tiny 3 / Tiny 3 Lite cameras on Linux
+
+USAGE:
+    tinyctl list [--json]                  Show connected cameras
+    tinyctl -c <CAMERA> [--json] <command> Control a camera
+    tinyctl select <CAMERA>                Remember a camera as 'selected'
+
+Every device command needs -c/--camera. There is no implicit default camera.
+
+CAMERA is one of:
+    <alias>               A name you gave it with `tinyctl alias`
+    <serial>              Its serial number (see `tinyctl list`)
+    <N>                   Its number in `tinyctl list` (ordered by USB port)
+    <usb port>            e.g. 1-4.4, or its id port-1-4.4
+    /dev/videoN           Or a /dev/v4l/by-id / by-path link
+    selected              The camera last chosen with `tinyctl select`
+    all                   Every connected camera, one after another
+
+CAMERAS
+    list                  Connected cameras: number, id, alias, model, USB port
+    select <CAMERA>       Set the selected camera (used by the bar widget/hotkeys)
+    selected              Print the selected camera's id
+    alias <CAMERA> <name> Name a camera (letters, digits, - and _)
+    alias <CAMERA> --clear
+
+POWER
+    sleep                 Put the camera to sleep (LED off, gimbal parks)
+    wake                  Wake the camera (LED on, gimbal lifts)
+    auto                  Wake during video or microphone use; release when idle
+    toggle                Sleep if awake, wake if asleep
+
+INFO
+    status                Show current state (control read; does NOT wake a sleeping camera)
+    info                  Serial number, UUID, model, device node
+    power                 USB power state from sysfs (opens nothing)
+    node                  Print the capture device path (opens nothing)
+
+AI TRACKING
+    track on|off|toggle   Enable/disable tracking
+    track <mode>          normal|upper|close|headless|lower|group|hand|whiteboard|desk
+    track speed std|sport Tracking responsiveness (experimental)
+
+GIMBAL
+    recenter              Return gimbal to center (a.k.a. park/home)
+    pan <deg>             Absolute pan  (range depends on the model; see `status`)
+    tilt <deg>            Absolute tilt (range depends on the model; see `status`)
+    zoom <0..100>         Absolute zoom
+    preset save <name>    Save current pan/tilt/zoom as a named preset (per camera)
+    preset recall <name>  Move to a saved preset
+    preset list           List this camera's saved presets
+
+IMAGE
+    wb auto               Auto white balance (safe fallback)
+    wb temp <2000..10000> Manual white-balance temperature (Kelvin)
+    wb pin                Pin manual WB to this camera's configured target
+    hdr on|off            HDR / WDR
+    fov wide|medium|narrow
+    exposure auto         Auto exposure
+    exposure <1..2500>    Manual exposure time (0.1ms units)
+    face-ae on|off        Face-priority auto exposure
+
+MISC
+    reset                 Safe defaults: wb auto, tracking off, recenter, wake
+    -h, --help            This help
+
+Settings are remembered per camera in ~/.config/tiny-control/config and
+re-applied by tiny-guard. Features not yet confirmed on a model are still sent,
+but you get an error if the camera does not confirm them.
+With -c all and --json, one JSON object is printed per camera, one per line.
+";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(Error::Usage(msg)) => {
+            eprintln!("tinyctl: {msg}\n\nRun `tinyctl --help` for usage.");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("tinyctl: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct Opts {
+    json: bool,
+    camera: Option<String>,
+    device: Option<String>,
+}
+
+fn take_value(args: &mut Vec<String>, i: usize, flag: &str) -> Result<String> {
+    args.remove(i);
+    if i >= args.len() {
+        return Err(Error::Usage(format!("{flag} needs a value")));
+    }
+    Ok(args.remove(i))
+}
+
+fn run(mut args: Vec<String>) -> Result<()> {
+    let mut o = Opts {
+        json: false,
+        camera: None,
+        device: None,
+    };
+    // Global flags are accepted anywhere, so a keybinding can append them.
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                o.json = true;
+                args.remove(i);
+            }
+            "-c" | "--camera" => o.camera = Some(take_value(&mut args, i, "--camera")?),
+            "-d" | "--device" => o.device = Some(take_value(&mut args, i, "--device")?),
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            s if s.starts_with("--camera=") => {
+                o.camera = Some(s["--camera=".len()..].to_string());
+                args.remove(i);
+            }
+            _ => i += 1,
+        }
+    }
+
+    let cmd = args
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::Usage("no command given".into()))?;
+    let rest = args[1..].to_vec();
+
+    // Commands that manage the camera list rather than a camera.
+    match cmd.as_str() {
+        "help" => {
+            print!("{USAGE}");
+            return Ok(());
+        }
+        "list" | "ls" => return cmd_list(o.json),
+        "selected" => {
+            let id =
+                config::selected().ok_or_else(|| Error::Config("no camera is selected".into()))?;
+            println!("{id}");
+            return Ok(());
+        }
+        "select" => {
+            let sel = rest
+                .first()
+                .or(o.camera.as_ref())
+                .ok_or_else(|| Error::Usage("select <CAMERA>".into()))?;
+            let cam = single(camera::resolve(sel, &camera::all())?, "select")?;
+            config::set_selected(&cam.id)?;
+            println!("selected {} ({})", cam.label(), cam.info.model.name);
+            return Ok(());
+        }
+        "alias" => return cmd_alias(&o, &rest),
+        _ => {}
+    }
+
+    let cams = targets(&o)?;
+    let many = cams.len() > 1;
+    let mut failures = 0;
+    for cam in &cams {
+        if many && !o.json {
+            println!(
+                "== {} ({}, {}) ==",
+                cam.label(),
+                cam.info.model.name,
+                cam.id
+            );
+        }
+        if let Err(e) = run_one(cam, &cmd, &rest, o.json) {
+            if !many {
+                return Err(e);
+            }
+            eprintln!("tinyctl: [{}] {e}", cam.label());
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        return Err(Error::Config(format!(
+            "{failures} of {} cameras failed",
+            cams.len()
+        )));
+    }
+    Ok(())
+}
+
+fn single(mut v: Vec<Cam>, what: &str) -> Result<Cam> {
+    if v.len() != 1 {
+        return Err(Error::Usage(format!("{what} needs exactly one camera")));
+    }
+    Ok(v.remove(0))
+}
+
+/// The cameras a device command acts on. `--device` (used by the udev hook)
+/// names a node directly; otherwise `-c` is mandatory.
+fn targets(o: &Opts) -> Result<Vec<Cam>> {
+    if let Some(path) = &o.device {
+        let info = discover::camera_for_path(path)?;
+        let serial = camera::read_serial(&info);
+        let id = serial.clone().unwrap_or_else(|| camera::port_id(&info));
+        let file = config::ConfigFile::load();
+        return Ok(vec![Cam {
+            alias: file.alias_of(&id).map(str::to_string),
+            index: 0,
+            provisional: serial.is_none(),
+            id,
+            serial,
+            info,
+        }]);
+    }
+    let sel = o.camera.as_deref().ok_or_else(|| {
+        Error::Usage(
+            "no camera given: use -c <alias|serial|number|selected|all> (see `tinyctl list`)"
+                .into(),
+        )
+    })?;
+    camera::resolve(sel, &camera::all())
+}
+
+fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
+    // Commands that must NOT open the device (to avoid waking the camera).
+    match cmd {
+        "power" => return cmd_power(cam, json),
+        "node" => {
+            println!("{}", cam.info.node);
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let _lock = config::PolicyLock::acquire()?;
+    let id = cam.id.as_str();
+
+    let opened = std::cell::OnceCell::new();
+    let open = || -> Result<&Device> {
+        if opened.get().is_none() {
+            let _ = opened.set(cam.open()?);
+        }
+        Ok(opened.get().unwrap())
+    };
+
+    // Gimbal-moving arguments (pan/tilt/zoom) and on/off toggles are validated
+    // BEFORE opening the device, so a malformed move (e.g. `tinyctl pan abc`)
+    // fails without touching the camera at all.
+    match cmd {
+        "sleep" => {
+            open()?.sleep()?;
+            config::save_setting(id, "power", "sleep")
+        }
+        "wake" => {
+            wake_managed(open()?)?;
+            config::save_setting(id, "power", "awake")
+        }
+        "auto" => config::save_setting(id, "power", "auto"),
+        "toggle" => {
+            let dev = open()?;
+            // Reading the vendor sleep bit does NOT wake the camera, so we can
+            // decide without disturbing a sleeping camera. Print the resulting
+            // state so a keybinding can surface it in a notification.
+            if dev.status()?.asleep {
+                wake_managed(dev)?;
+                config::save_setting(id, "power", "awake")?;
+                println!("awake");
+            } else {
+                dev.sleep()?;
+                config::save_setting(id, "power", "sleep")?;
+                println!("asleep");
+            }
+            Ok(())
+        }
+        "status" => cmd_status(cam, open()?, json),
+        "info" => cmd_info(cam, open()?, json),
+        "track" => cmd_track(id, open()?, rest),
+        "recenter" | "park" | "home" => open()?.recenter(),
+        "pan" => {
+            let d = need_finite(rest, "pan degrees")?;
+            open()?.set_pan_deg(d)
+        }
+        "tilt" => {
+            let d = need_finite(rest, "tilt degrees")?;
+            open()?.set_tilt_deg(d)
+        }
+        "zoom" => {
+            let z = need_i32(rest, "zoom 0..100")?;
+            open()?.set_zoom(z)
+        }
+        "preset" => cmd_preset(id, open()?, rest),
+        "wb" => cmd_wb(id, open()?, rest),
+        "hdr" => {
+            let on = need_on_off(rest, "hdr")?;
+            open()?.set_hdr(on)?;
+            config::save_setting(id, "hdr", if on { "true" } else { "false" })
+        }
+        "fov" => cmd_fov(open()?, rest),
+        "exposure" => cmd_exposure(open()?, rest),
+        "face-ae" => {
+            let on = need_on_off(rest, "face-ae")?;
+            open()?.set_face_ae(on)
+        }
+        "reset" => cmd_reset(id, open()?),
+        other => Err(Error::Usage(format!("unknown command '{other}'"))),
+    }?;
+
+    // A successful ioctl only means transport success; confirm the camera
+    // actually applied vendor settings, and say which model refused.
+    if matches!(
+        cmd,
+        "sleep" | "wake" | "toggle" | "track" | "hdr" | "wb" | "reset"
+    ) {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let dev = open()?;
+        let actual = dev.status()?;
+        let desired = config::Config::load_for(id);
+        let failed = match cmd {
+            "sleep" | "wake" | "toggle" => {
+                (actual.asleep != (desired.power == "sleep")).then_some(Feature::Sleep)
+            }
+            "track" if rest.first().map(String::as_str) != Some("speed") => {
+                (actual.tracking != desired.tracking).then_some(Feature::Tracking(desired.tracking))
+            }
+            "hdr" => (desired.hdr != Some(actual.hdr)).then_some(Feature::Hdr),
+            "wb" => (actual.auto_wb != desired.auto_wb
+                || (!desired.auto_wb && actual.wb_temp != desired.wb_temp))
+                .then_some(Feature::WhiteBalance),
+            "reset" => (actual.asleep || actual.tracking != TrackMode::Off || !actual.auto_wb)
+                .then_some(Feature::Tracking(TrackMode::Off)),
+            _ => None,
+        };
+        if let Some(f) = failed {
+            return Err(dev.model().unconfirmed(f));
+        }
+    }
+    Ok(())
+}
+
+/// Minimal JSON string escaper for the fields we emit (control chars, quotes,
+/// backslashes). Keeps `--json` output valid even if a value contains oddities.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn json_opt(s: Option<&str>) -> String {
+    s.map(|s| format!("\"{}\"", json_str(s)))
+        .unwrap_or_else(|| "null".into())
+}
+
+/// Common identity fields for every per-camera JSON object.
+fn json_camera(cam: &Cam) -> String {
+    format!(
+        "\"camera\":\"{}\",\"alias\":{},\"model\":\"{}\",\"model_id\":\"{}\",\"verified\":{}",
+        json_str(&cam.id),
+        json_opt(cam.alias.as_deref()),
+        json_str(cam.info.model.name),
+        cam.info.model.id,
+        cam.info.model.is_verified()
+    )
+}
+
+fn cmd_list(json: bool) -> Result<()> {
+    let cams = camera::all();
+    let selected = config::selected();
+    if json {
+        let items: Vec<String> = cams
+            .iter()
+            .map(|c| {
+                format!(
+                    "{{\"index\":{},{},\"serial\":{},\"product\":\"{}\",\"usb_pid\":\"{}\",\
+                     \"usb_port\":\"{}\",\"node\":\"{}\",\"usb_power\":{},\"selected\":{}}}",
+                    c.index,
+                    json_camera(c),
+                    json_opt(c.serial.as_deref()),
+                    json_str(&c.info.product),
+                    json_str(&c.info.pid),
+                    json_str(&c.info.usb_path),
+                    json_str(&c.info.node),
+                    json_opt(discover::usb_power_state(&c.info.node).as_deref()),
+                    selected.as_deref() == Some(c.id.as_str())
+                )
+            })
+            .collect();
+        println!("[{}]", items.join(","));
+        return Ok(());
+    }
+    if cams.is_empty() {
+        println!("(no OBSBOT cameras connected)");
+        return Ok(());
+    }
+    println!(
+        "  #  {:<16} {:<10} {:<20} {:<8} NODE",
+        "ID", "ALIAS", "MODEL", "USB"
+    );
+    for c in &cams {
+        let mark = if selected.as_deref() == Some(c.id.as_str()) {
+            '*'
+        } else {
+            ' '
+        };
+        println!(
+            "{mark} {}  {:<16} {:<10} {:<20} {:<8} {}{}",
+            c.index,
+            c.id,
+            c.alias.as_deref().unwrap_or("-"),
+            c.info.model.name.trim_start_matches("OBSBOT "),
+            c.info.usb_path,
+            c.info.node,
+            if c.info.model.is_verified() {
+                ""
+            } else {
+                "  (untested model)"
+            }
+        );
+    }
+    if cams.len() > 4 {
+        eprintln!(
+            "note: {} cameras connected; tiny-control is tested with up to 4",
+            cams.len()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_alias(o: &Opts, rest: &[String]) -> Result<()> {
+    let (sel, name) = match (o.camera.as_deref(), rest) {
+        (Some(c), [n]) => (c, n.as_str()),
+        (_, [c, n]) => (c.as_str(), n.as_str()),
+        _ => return Err(Error::Usage("alias <CAMERA> <name>|--clear".into())),
+    };
+    let cam = single(camera::resolve(sel, &camera::all())?, "alias")?;
+    if cam.provisional {
+        eprintln!(
+            "tinyctl: warning: could not read {}'s serial; the alias is tied to USB port {}",
+            cam.info.model.name, cam.info.usb_path
+        );
+    }
+    let _lock = config::PolicyLock::acquire()?;
+    if name == "--clear" {
+        config::set_alias(&cam.id, None)?;
+        println!("cleared alias for {}", cam.id);
+    } else {
+        config::set_alias(&cam.id, Some(name))?;
+        println!("{} is now '{name}'", cam.id);
+    }
+    Ok(())
+}
+
+fn cmd_power(cam: &Cam, json: bool) -> Result<()> {
+    let state = discover::usb_power_state(&cam.info.node).unwrap_or_else(|| "unknown".into());
+    if json {
+        println!(
+            "{{{},\"usb_power\":\"{}\",\"node\":\"{}\"}}",
+            json_camera(cam),
+            json_str(&state),
+            json_str(&cam.info.node)
+        );
+    } else {
+        println!("USB power state : {state}");
+        println!("device node     : {}", cam.info.node);
+        println!(
+            "(this is USB autosuspend, not the vendor sleep bit — the LED is the ground truth)"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_status(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
+    let s = dev.status()?;
+    let desired = config::Config::load_for(&cam.id);
+    let (pan_min, pan_max) = dev.gimbal_range_deg(controls::CID_PAN_ABSOLUTE);
+    let (tilt_min, tilt_max) = dev.gimbal_range_deg(controls::CID_TILT_ABSOLUTE);
+    if json {
+        println!(
+            "{{{},\"asleep\":{},\"tracking\":\"{}\",\"tracking_sport\":{},\"hdr\":{},\
+             \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
+             \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
+             \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}]}}",
+            json_camera(cam),
+            s.asleep,
+            json_str(s.tracking.label()),
+            s.tracking_sport,
+            s.hdr,
+            s.auto_wb,
+            s.wb_temp,
+            s.pan_deg,
+            s.tilt_deg,
+            s.zoom,
+            s.auto_exposure,
+            s.auto_sleep_seconds,
+            desired.power,
+            desired.tracking.label(),
+            pan_min,
+            pan_max,
+            tilt_min,
+            tilt_max
+        );
+    } else {
+        println!("camera      : {} ({})", cam.label(), cam.info.model.name);
+        println!(
+            "power       : {}",
+            if s.asleep { "asleep" } else { "awake" }
+        );
+        println!(
+            "sleep timer : {} seconds (0 = disabled)",
+            s.auto_sleep_seconds
+        );
+        println!(
+            "tracking    : {}{}",
+            s.tracking.label(),
+            if s.tracking_sport { " (sport)" } else { "" }
+        );
+        println!("hdr         : {}", onoff(s.hdr));
+        println!(
+            "white bal.  : {}",
+            if s.auto_wb {
+                "auto".to_string()
+            } else {
+                format!("manual {}K", s.wb_temp)
+            }
+        );
+        println!(
+            "exposure    : {}",
+            if s.auto_exposure { "auto" } else { "manual" }
+        );
+        println!(
+            "gimbal      : pan {:.1}° ({pan_min:.0}..{pan_max:.0}), tilt {:.1}° ({tilt_min:.0}..{tilt_max:.0}), zoom {}",
+            s.pan_deg, s.tilt_deg, s.zoom
+        );
+    }
+    Ok(())
+}
+
+fn cmd_info(cam: &Cam, dev: &Device, json: bool) -> Result<()> {
+    let serial = dev.serial().unwrap_or_else(|_| "(unavailable)".into());
+    let uuid = dev.uuid_hex().unwrap_or_else(|_| "(unavailable)".into());
+    if json {
+        println!(
+            "{{{},\"serial\":\"{}\",\"uuid\":\"{}\",\"node\":\"{}\",\"usb_port\":\"{}\",\"usb_pid\":\"{}\"}}",
+            json_camera(cam),
+            json_str(&serial),
+            json_str(&uuid),
+            json_str(dev.path()),
+            json_str(&cam.info.usb_path),
+            json_str(&cam.info.pid)
+        );
+    } else {
+        println!(
+            "model  : {}{}",
+            cam.info.model.name,
+            if cam.info.model.is_verified() {
+                ""
+            } else {
+                " (not yet verified on hardware by this project)"
+            }
+        );
+        println!("serial : {serial}");
+        println!("uuid   : {uuid}");
+        println!("alias  : {}", cam.alias.as_deref().unwrap_or("-"));
+        println!("usb    : {} (3564:{})", cam.info.usb_path, cam.info.pid);
+        println!("node   : {}", dev.path());
+    }
+    Ok(())
+}
+
+fn cmd_track(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
+    let arg = rest
+        .first()
+        .ok_or_else(|| Error::Usage("track needs on|off|toggle|<mode>|speed".into()))?;
+    if arg == "toggle" {
+        let on = dev.status()?.tracking != TrackMode::Off;
+        let next = if on {
+            TrackMode::Off
+        } else {
+            TrackMode::Normal
+        };
+        dev.set_tracking(next)?;
+        config::save_setting(id, "tracking", next.label())?;
+        println!("{}", if on { "off" } else { "on" });
+        return Ok(());
+    }
+    if arg == "speed" {
+        let s = rest.get(1).map(String::as_str);
+        return match s {
+            Some("sport") | Some("fast") => dev.set_track_speed(true),
+            Some("std") | Some("standard") | Some("normal") => dev.set_track_speed(false),
+            _ => Err(Error::Usage("track speed std|sport".into())),
+        };
+    }
+    let mode = TrackMode::from_str(arg)
+        .ok_or_else(|| Error::Usage(format!("unknown tracking mode '{arg}'")))?;
+    dev.set_tracking(mode)?;
+    config::save_setting(id, "tracking", mode.label())
+}
+
+fn cmd_preset(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
+    match rest.first().map(String::as_str) {
+        Some("list") => {
+            let names = config::list_presets(id);
+            if names.is_empty() {
+                println!("(no presets saved for this camera)");
+            } else {
+                for n in names {
+                    println!("{n}");
+                }
+            }
+            Ok(())
+        }
+        Some("save") => {
+            let name = rest
+                .get(1)
+                .ok_or_else(|| Error::Usage("preset save <name>".into()))?;
+            let s = dev.status()?;
+            config::save_preset(
+                id,
+                name,
+                Preset {
+                    pan_deg: s.pan_deg,
+                    tilt_deg: s.tilt_deg,
+                    zoom: s.zoom,
+                },
+            )?;
+            println!(
+                "saved preset '{name}' (pan {:.1}°, tilt {:.1}°, zoom {})",
+                s.pan_deg, s.tilt_deg, s.zoom
+            );
+            Ok(())
+        }
+        Some("recall") | Some("load") => {
+            let name = rest
+                .get(1)
+                .ok_or_else(|| Error::Usage("preset recall <name>".into()))?;
+            let p = config::load_preset(id, name)?;
+            dev.set_zoom(p.zoom)?;
+            dev.set_pan_deg(p.pan_deg)?;
+            dev.set_tilt_deg(p.tilt_deg)?;
+            println!("recalled preset '{name}'");
+            Ok(())
+        }
+        _ => Err(Error::Usage("preset save|recall|list".into())),
+    }
+}
+
+fn cmd_wb(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
+    match rest.first().map(String::as_str) {
+        Some("auto") => {
+            dev.set_wb_auto()?;
+            config::save_setting(id, "auto_wb", "true")
+        }
+        Some("temp") => {
+            let t = need_i32(&rest[1.min(rest.len())..], "white balance temperature")?;
+            dev.set_wb_temp(t)?;
+            config::save_setting(id, "wb_temp", &t.to_string())?;
+            config::save_setting(id, "auto_wb", "false")
+        }
+        // Pin to this camera's configured target temperature (single source
+        // of truth for the udev cold-plug hook).
+        Some("pin") => {
+            dev.set_wb_temp(config::Config::load_for(id).wb_temp)?;
+            config::save_setting(id, "auto_wb", "false")
+        }
+        _ => Err(Error::Usage(format!(
+            "wb auto | wb temp <{}..{}> | wb pin",
+            controls::WB_TEMP_MIN,
+            controls::WB_TEMP_MAX
+        ))),
+    }
+}
+
+fn cmd_fov(dev: &Device, rest: &[String]) -> Result<()> {
+    let level = match rest.first().map(String::as_str) {
+        Some("wide") => 0,
+        Some("medium") | Some("med") => 1,
+        Some("narrow") => 2,
+        _ => return Err(Error::Usage("fov wide|medium|narrow".into())),
+    };
+    dev.set_fov(level)
+}
+
+fn cmd_exposure(dev: &Device, rest: &[String]) -> Result<()> {
+    match rest.first().map(String::as_str) {
+        Some("auto") => dev.set_auto_exposure(true),
+        Some(v) => {
+            let n: i32 = v
+                .parse()
+                .map_err(|_| Error::Usage("exposure auto|<1..2500>".into()))?;
+            dev.set_exposure(n)
+        }
+        None => Err(Error::Usage("exposure auto|<1..2500>".into())),
+    }
+}
+
+fn cmd_reset(id: &str, dev: &Device) -> Result<()> {
+    wake_managed(dev)?;
+    dev.set_tracking(TrackMode::Off)?;
+    dev.recenter()?;
+    dev.set_wb_auto()?;
+    config::save_setting(id, "power", "awake")?;
+    config::save_setting(id, "tracking", "off")?;
+    config::save_setting(id, "auto_wb", "true")?;
+    println!("reset: awake, tracking off, recentered, auto WB");
+    Ok(())
+}
+
+/// A persistent Wake choice must first disable the independent firmware timer.
+/// On models where that timer is untested, failing to disable it is a warning.
+fn wake_managed(dev: &Device) -> Result<()> {
+    if let Some(w) = dev.wake_managed()? {
+        eprintln!("tinyctl: warning: {w}; the camera may still fall asleep on its own timer");
+    }
+    Ok(())
+}
+
+// --- small arg helpers ---
+
+fn need_f64(rest: &[String], what: &str) -> Result<f64> {
+    rest.first()
+        .ok_or_else(|| Error::Usage(format!("expected {what}")))?
+        .parse()
+        .map_err(|_| Error::Usage(format!("{what} must be a number")))
+}
+
+/// Like [`need_f64`] but rejects NaN/inf, which would otherwise cast to 0 and
+/// silently move the gimbal to center.
+fn need_finite(rest: &[String], what: &str) -> Result<f64> {
+    let v = need_f64(rest, what)?;
+    if v.is_finite() {
+        Ok(v)
+    } else {
+        Err(Error::Usage(format!("{what} must be a finite number")))
+    }
+}
+
+fn need_i32(rest: &[String], what: &str) -> Result<i32> {
+    rest.first()
+        .ok_or_else(|| Error::Usage(format!("expected {what}")))?
+        .parse()
+        .map_err(|_| Error::Usage(format!("{what} must be an integer")))
+}
+
+fn need_on_off(rest: &[String], what: &str) -> Result<bool> {
+    match rest.first().map(String::as_str) {
+        Some("on") | Some("true") | Some("1") => Ok(true),
+        Some("off") | Some("false") | Some("0") => Ok(false),
+        _ => Err(Error::Usage(format!("{what} on|off"))),
+    }
+}
+
+fn onoff(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
+    }
+}

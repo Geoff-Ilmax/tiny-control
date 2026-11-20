@@ -1,0 +1,250 @@
+//! Supported OBSBOT models and what each one is known to support.
+//!
+//! The Tiny 2 and Tiny 3 generations speak the same UVC extension-unit vendor
+//! protocol, so one driver serves both. What differs per model is the USB
+//! product ID, the gimbal range (queried from the device at runtime, never
+//! hardcoded) and which features have actually been confirmed on real hardware.
+//!
+//! Every feature on every model has one of three support levels:
+//!
+//! * [`Support::Verified`] — confirmed on real hardware by this project.
+//! * [`Support::Expected`] — same protocol, should work, not yet confirmed.
+//!   Commands are sent and their result is read back; if the camera does not
+//!   confirm the change the user gets an error naming the model, never a
+//!   silent no-op.
+//! * [`Support::Unsupported`] — known not to exist on that model. Refused
+//!   before anything is sent to the camera.
+
+use crate::TrackMode;
+
+/// Vendor ID shared by every OBSBOT camera (Remo Tech Co., Ltd.).
+pub const VENDOR_ID: &str = "3564";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Support {
+    Verified,
+    Expected,
+    Unsupported,
+}
+
+/// A user-facing capability, used to gate commands per model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    Sleep,
+    AutoSleepTimer,
+    Tracking(TrackMode),
+    TrackSpeed,
+    Gimbal,
+    Zoom,
+    WhiteBalance,
+    Hdr,
+    Fov,
+    Exposure,
+    FaceAe,
+}
+
+impl Feature {
+    pub fn label(self) -> String {
+        match self {
+            Feature::Sleep => "sleep/wake".into(),
+            Feature::AutoSleepTimer => "firmware auto-sleep timer".into(),
+            Feature::Tracking(TrackMode::Off) => "AI tracking".into(),
+            Feature::Tracking(m) => format!("'{}' tracking", m.label()),
+            Feature::TrackSpeed => "tracking speed".into(),
+            Feature::Gimbal => "gimbal pan/tilt".into(),
+            Feature::Zoom => "zoom".into(),
+            Feature::WhiteBalance => "white balance".into(),
+            Feature::Hdr => "HDR".into(),
+            Feature::Fov => "field of view".into(),
+            Feature::Exposure => "exposure".into(),
+            Feature::FaceAe => "face auto-exposure".into(),
+        }
+    }
+
+    /// Matching key for the model tables: all tracking modes share one entry
+    /// unless a model lists a specific mode.
+    fn matches(self, other: Feature) -> bool {
+        match (self, other) {
+            (Feature::Tracking(a), Feature::Tracking(b)) => a == b || b == TrackMode::Off,
+            (a, b) => a == b,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    Tiny2,
+    Tiny3,
+    /// An OBSBOT product ID this build does not know. Treated as protocol
+    /// compatible, with every feature [`Support::Expected`].
+    Unknown,
+}
+
+#[derive(Debug)]
+pub struct Model {
+    /// Short stable id used in JSON output (`tiny2`, `tiny3`, `tiny3-lite`).
+    pub id: &'static str,
+    pub name: &'static str,
+    /// USB product ID (lowercase hex), or "" for the unknown fallback.
+    pub pid: &'static str,
+    pub family: Family,
+    /// Features confirmed on real hardware. `Tracking(Off)` stands for every
+    /// tracking mode not listed separately.
+    verified: &'static [Feature],
+    /// Features known to be absent on this model.
+    unsupported: &'static [Feature],
+}
+
+impl Model {
+    pub fn support(&self, f: Feature) -> Support {
+        // A specific unsupported mode wins over a generic verified entry.
+        if self.unsupported.iter().any(|&u| f.matches(u)) {
+            Support::Unsupported
+        } else if self.verified.iter().any(|&v| f.matches(v)) {
+            Support::Verified
+        } else {
+            Support::Expected
+        }
+    }
+
+    /// Ok unless the feature is known to be missing on this model.
+    pub fn require(&self, f: Feature) -> crate::Result<()> {
+        if self.support(f) == Support::Unsupported {
+            return Err(crate::Error::Unsupported {
+                feature: f.label(),
+                model: self.name.into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The error for a command the transport accepted but the camera did not
+    /// apply. On an untested model this says so, since the likeliest cause is
+    /// that the model lacks the feature.
+    pub fn unconfirmed(&self, f: Feature) -> crate::Error {
+        match self.support(f) {
+            Support::Verified => crate::Error::Config(format!(
+                "the {} did not confirm the {} change; saved intent will be retried by tiny-guard",
+                self.name,
+                f.label()
+            )),
+            _ => crate::Error::Unsupported {
+                feature: format!(
+                    "{} (sent, but the camera did not confirm it; untested on this model)",
+                    f.label()
+                ),
+                model: self.name.into(),
+            },
+        }
+    }
+
+    /// True when this model has been confirmed by real-hardware testing for
+    /// at least the core power + tracking path.
+    pub fn is_verified(&self) -> bool {
+        self.support(Feature::Sleep) == Support::Verified
+    }
+}
+
+/// Features confirmed on the Tiny 3 Lite (fw 0510) — see PROTOCOL.md.
+const TINY3_LITE_VERIFIED: &[Feature] = &[
+    Feature::Sleep,
+    Feature::AutoSleepTimer,
+    Feature::Tracking(TrackMode::Off),
+    Feature::Gimbal,
+    Feature::Zoom,
+    Feature::WhiteBalance,
+    Feature::Hdr,
+];
+
+pub static MODELS: &[Model] = &[
+    Model {
+        id: "tiny3-lite",
+        name: "OBSBOT Tiny 3 Lite",
+        pid: "ff04",
+        family: Family::Tiny3,
+        verified: TINY3_LITE_VERIFIED,
+        unsupported: &[],
+    },
+    Model {
+        id: "tiny3",
+        name: "OBSBOT Tiny 3",
+        pid: "ff02",
+        family: Family::Tiny3,
+        verified: &[],
+        unsupported: &[],
+    },
+    Model {
+        id: "tiny2",
+        name: "OBSBOT Tiny 2",
+        pid: "fef8",
+        family: Family::Tiny2,
+        verified: &[],
+        unsupported: &[],
+    },
+];
+
+pub static UNKNOWN: Model = Model {
+    id: "unknown",
+    name: "OBSBOT camera (unrecognized model)",
+    pid: "",
+    family: Family::Unknown,
+    verified: &[],
+    unsupported: &[],
+};
+
+/// Look up a model by USB product ID (case-insensitive). Unknown OBSBOT PIDs
+/// map to [`UNKNOWN`] so new models work out of the box, flagged as untested.
+pub fn by_pid(pid: &str) -> &'static Model {
+    let pid = pid.trim().to_ascii_lowercase();
+    MODELS.iter().find(|m| m.pid == pid).unwrap_or(&UNKNOWN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pids_resolve_to_models() {
+        assert_eq!(by_pid("ff04").id, "tiny3-lite");
+        assert_eq!(by_pid("FF02").id, "tiny3");
+        assert_eq!(by_pid("fef8\n").id, "tiny2");
+        assert_eq!(by_pid("abcd").id, "unknown");
+    }
+
+    #[test]
+    fn support_levels() {
+        let lite = by_pid("ff04");
+        assert_eq!(lite.support(Feature::Sleep), Support::Verified);
+        assert_eq!(
+            lite.support(Feature::Tracking(TrackMode::Desk)),
+            Support::Verified
+        );
+        assert_eq!(lite.support(Feature::Fov), Support::Expected);
+        assert!(lite.is_verified());
+        assert!(!by_pid("fef8").is_verified());
+        assert_eq!(by_pid("fef8").support(Feature::Hdr), Support::Expected);
+    }
+
+    #[test]
+    fn unsupported_is_refused_with_model_name() {
+        static M: Model = Model {
+            id: "test",
+            name: "Test Cam",
+            pid: "0000",
+            family: Family::Unknown,
+            verified: &[Feature::Tracking(TrackMode::Off)],
+            unsupported: &[Feature::Tracking(TrackMode::Whiteboard), Feature::Fov],
+        };
+        assert_eq!(
+            M.support(Feature::Tracking(TrackMode::Whiteboard)),
+            Support::Unsupported
+        );
+        assert_eq!(
+            M.support(Feature::Tracking(TrackMode::Normal)),
+            Support::Verified
+        );
+        let e = M.require(Feature::Fov).unwrap_err().to_string();
+        assert_eq!(e, "field of view is not supported on the Test Cam");
+        assert!(M.require(Feature::Hdr).is_ok());
+    }
+}

@@ -9,10 +9,11 @@ use crate::controls;
 use crate::error::{Error, Result};
 use crate::frame::{self, FLAG_GET, FLAG_SET};
 use crate::ioctl::VideoFd;
+use crate::model::{Feature, Model, Support};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
-// UVC extension unit (same as Tiny 2: bUnitID 2, GUID 9A1E7291-...).
+// UVC extension unit, shared by Tiny 2 and Tiny 3 (bUnitID 2, GUID 9A1E7291-...).
 const XU_UNIT: u8 = 0x02;
 const SEL_CMD: u8 = 0x02; // framed V3 command channel + reply mailbox
 const SEL_STATUS: u8 = 0x06; // 60-byte status block + raw-TLV write target
@@ -106,7 +107,9 @@ impl TrackMode {
             (2, 3) => TrackMode::Headless,
             (2, 4) => TrackMode::LowerBody,
             (1, _) => TrackMode::Group,
-            (3, _) => TrackMode::Hand,
+            // The Tiny 2 reports hand tracking as category 6 in its status
+            // block even though the SET uses 3 (observed by Tiny4Linux).
+            (3, _) | (6, _) => TrackMode::Hand,
             (4, _) => TrackMode::Whiteboard,
             (5, _) => TrackMode::Desk,
             _ => TrackMode::Normal,
@@ -146,10 +149,11 @@ pub struct Status {
     pub auto_exposure: bool,
 }
 
-/// An open, awake camera.
+/// An open camera (control fd; reads do not wake a sleeping camera).
 pub struct Device {
     fd: VideoFd,
     path: String,
+    model: &'static Model,
 }
 
 static SEQ: AtomicU16 = AtomicU16::new(0);
@@ -171,23 +175,32 @@ fn next_seq() -> u16 {
 }
 
 impl Device {
-    /// Discover and open the first Tiny 3 family camera. Holds the fd (blocks sleep).
-    pub fn open_default() -> Result<Device> {
-        let path = crate::discover::find_device()?;
-        Device::open_path(&path)
+    /// Open a discovered camera. Holds the fd (blocks sleep).
+    pub fn open_camera(cam: &crate::discover::Camera) -> Result<Device> {
+        Ok(Device {
+            fd: VideoFd::open(&cam.node)?,
+            path: cam.node.clone(),
+            model: cam.model,
+        })
     }
 
-    /// Open a specific node path. Holds the fd (blocks sleep).
+    /// Open a specific node path. Holds the fd (blocks sleep). The model is
+    /// looked up from sysfs; a non-OBSBOT node is refused.
     pub fn open_path(path: &str) -> Result<Device> {
-        let fd = VideoFd::open(path)?;
+        let cam = crate::discover::camera_for_path(path)?;
         Ok(Device {
-            fd,
+            fd: VideoFd::open(path)?,
             path: path.to_string(),
+            model: cam.model,
         })
     }
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    pub fn model(&self) -> &'static Model {
+        self.model
     }
 
     pub fn fd(&self) -> &VideoFd {
@@ -230,11 +243,13 @@ impl Device {
 
     /// Vendor sleep: LED off, gimbal parks. Verified on Tiny 3 Lite.
     pub fn sleep(&self) -> Result<()> {
+        self.model.require(Feature::Sleep)?;
         self.set_power(true)
     }
 
     /// Vendor wake: LED on, gimbal lifts back up. Verified on Tiny 3 Lite.
     pub fn wake(&self) -> Result<()> {
+        self.model.require(Feature::Sleep)?;
         self.set_power(false)
     }
 
@@ -243,6 +258,7 @@ impl Device {
     /// Raw selector-6 TLV 0x0b carries a little-endian u16 seconds value.
     /// Readback at status bytes 10..12 is verified on Tiny 3 Lite.
     pub fn disable_auto_sleep(&self) -> Result<()> {
+        self.model.require(Feature::AutoSleepTimer)?;
         if decode_auto_sleep(&self.fd.xu_get(XU_UNIT, SEL_STATUS)?) == 0 {
             return Ok(());
         }
@@ -254,7 +270,20 @@ impl Device {
                 return Ok(());
             }
         }
-        Err(Error::NoReply("disabled firmware auto-sleep timer"))
+        Err(self.model.unconfirmed(Feature::AutoSleepTimer))
+    }
+
+    /// Disable the firmware timer where possible, then wake. On a model where
+    /// the timer is not verified, failing to disable it is reported as a
+    /// warning (returned) rather than blocking the wake itself.
+    pub fn wake_managed(&self) -> Result<Option<Error>> {
+        let warning = match self.disable_auto_sleep() {
+            Ok(()) => None,
+            Err(e) if self.model.support(Feature::AutoSleepTimer) != Support::Verified => Some(e),
+            Err(e) => return Err(e),
+        };
+        self.wake()?;
+        Ok(warning)
     }
 
     fn set_power(&self, asleep: bool) -> Result<()> {
@@ -267,7 +296,7 @@ impl Device {
                 return Ok(());
             }
         }
-        Err(Error::NoReply("confirmed power transition"))
+        Err(self.model.unconfirmed(Feature::Sleep))
     }
 
     // --- identity ---
@@ -290,6 +319,7 @@ impl Device {
 
     /// Set the AI tracking mode (or Off). Raw TLV on selector 6.
     pub fn set_tracking(&self, mode: TrackMode) -> Result<()> {
+        self.model.require(Feature::Tracking(mode))?;
         let (category, submode) = mode.category_submode();
         self.fd.xu_set(
             XU_UNIT,
@@ -301,6 +331,7 @@ impl Device {
     /// Set tracking speed. EXPERIMENTAL on Tiny 3 (frame from Tiny 2 capture).
     /// `sport` = fast; otherwise standard.
     pub fn set_track_speed(&self, sport: bool) -> Result<()> {
+        self.model.require(Feature::TrackSpeed)?;
         let v: u8 = if sport { 0x02 } else { 0x00 };
         self.send_set(RCV_AI, CMD_TRACK_SPEED, &[v])
     }
@@ -316,6 +347,7 @@ impl Device {
     /// centered. Writing pan=0/tilt=0 both moves the gimbal AND keeps the
     /// readback honest. The vendor frame is preserved in `recenter_vendor`.
     pub fn recenter(&self) -> Result<()> {
+        self.model.require(Feature::Gimbal)?;
         self.fd.set_ctrl(controls::CID_PAN_ABSOLUTE, 0)?;
         self.fd.set_ctrl(controls::CID_TILT_ABSOLUTE, 0)
     }
@@ -339,24 +371,52 @@ impl Device {
         self.send_set(RCV_AI, CMD_GIMBAL_MOVE, &p)
     }
 
-    /// Absolute pan via the standard UVC control. `deg` is clamped to ±130°.
-    pub fn set_pan_deg(&self, deg: f64) -> Result<()> {
-        self.fd.set_ctrl(
-            controls::CID_PAN_ABSOLUTE,
-            controls::deg_to_asec(deg, controls::PAN_MAX),
+    /// Gimbal range in degrees for pan or tilt, as reported by this camera.
+    /// Tiny 2 and Tiny 3 gimbals differ, so this is queried, not assumed.
+    pub fn gimbal_range_deg(&self, cid: u32) -> (f64, f64) {
+        let fallback = if cid == controls::CID_TILT_ABSOLUTE {
+            controls::TILT_MAX
+        } else {
+            controls::PAN_MAX
+        };
+        let (min, max) = match self.fd.query_ctrl(cid) {
+            Ok(r) if r.max > r.min => (r.min, r.max),
+            _ => (-fallback, fallback),
+        };
+        (
+            min as f64 / controls::ASEC_PER_DEG,
+            max as f64 / controls::ASEC_PER_DEG,
         )
     }
 
-    /// Absolute tilt via the standard UVC control. `deg` is clamped to ±90°.
+    fn set_angle(&self, cid: u32, what: &'static str, deg: f64) -> Result<()> {
+        self.model.require(Feature::Gimbal)?;
+        let (min, max) = self.gimbal_range_deg(cid);
+        if !(min..=max).contains(&deg) {
+            return Err(Error::OutOfRange {
+                what,
+                min: min.round() as i64,
+                max: max.round() as i64,
+                got: deg.round() as i64,
+            });
+        }
+        let asec = (deg * controls::ASEC_PER_DEG).round() as i32;
+        self.fd.set_ctrl(cid, asec)
+    }
+
+    /// Absolute pan via the standard UVC control, within the camera's range.
+    pub fn set_pan_deg(&self, deg: f64) -> Result<()> {
+        self.set_angle(controls::CID_PAN_ABSOLUTE, "pan degrees", deg)
+    }
+
+    /// Absolute tilt via the standard UVC control, within the camera's range.
     pub fn set_tilt_deg(&self, deg: f64) -> Result<()> {
-        self.fd.set_ctrl(
-            controls::CID_TILT_ABSOLUTE,
-            controls::deg_to_asec(deg, controls::TILT_MAX),
-        )
+        self.set_angle(controls::CID_TILT_ABSOLUTE, "tilt degrees", deg)
     }
 
     /// Absolute zoom 0..=100 via the standard UVC control.
     pub fn set_zoom(&self, zoom: i32) -> Result<()> {
+        self.model.require(Feature::Zoom)?;
         if !(0..=100).contains(&zoom) {
             return Err(Error::OutOfRange {
                 what: "zoom",
@@ -372,6 +432,7 @@ impl Device {
 
     /// Pin manual white balance at `temp` Kelvin, in the firmware-safe order.
     pub fn set_wb_temp(&self, temp: i32) -> Result<()> {
+        self.model.require(Feature::WhiteBalance)?;
         if !(controls::WB_TEMP_MIN..=controls::WB_TEMP_MAX).contains(&temp) {
             return Err(Error::OutOfRange {
                 what: "white balance temperature (Kelvin)",
@@ -390,12 +451,14 @@ impl Device {
 
     /// HDR/WDR on or off. Raw TLV on selector 6.
     pub fn set_hdr(&self, on: bool) -> Result<()> {
+        self.model.require(Feature::Hdr)?;
         self.fd
             .xu_set(XU_UNIT, SEL_STATUS, &[TLV_HDR, 0x01, on as u8])
     }
 
     /// Field of view: 0 wide(86°), 1 medium(78°), 2 narrow(65°).
     pub fn set_fov(&self, level: u8) -> Result<()> {
+        self.model.require(Feature::Fov)?;
         if level > 2 {
             return Err(Error::OutOfRange {
                 what: "fov level",
@@ -410,12 +473,14 @@ impl Device {
     /// Face-priority auto-exposure: false = global metering, true = face.
     /// Requires auto-exposure on.
     pub fn set_face_ae(&self, face: bool) -> Result<()> {
+        self.model.require(Feature::FaceAe)?;
         self.fd
             .xu_set(XU_UNIT, SEL_STATUS, &[TLV_FACE_AE, 0x01, face as u8])
     }
 
     /// Auto exposure on/off (standard UVC menu control).
     pub fn set_auto_exposure(&self, auto: bool) -> Result<()> {
+        self.model.require(Feature::Exposure)?;
         let v = if auto {
             controls::EXPOSURE_AUTO_MODE
         } else {
@@ -427,6 +492,7 @@ impl Device {
     /// Manual exposure time (device units, 1..=2500 ≈ 0.1ms..250ms). Sets
     /// manual mode first.
     pub fn set_exposure(&self, value: i32) -> Result<()> {
+        self.model.require(Feature::Exposure)?;
         if !(1..=2500).contains(&value) {
             return Err(Error::OutOfRange {
                 what: "exposure",
@@ -474,6 +540,13 @@ fn decode_auto_sleep(status: &[u8; 60]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny2_hand_tracking_readback_decodes() {
+        assert_eq!(TrackMode::from_status(6, 0), TrackMode::Hand);
+        assert_eq!(TrackMode::from_status(3, 0), TrackMode::Hand);
+        assert_eq!(TrackMode::from_status(2, 1), TrackMode::UpperBody);
+    }
 
     #[test]
     fn firmware_sleep_timer_is_little_endian_and_distinct_from_sleep_state() {
