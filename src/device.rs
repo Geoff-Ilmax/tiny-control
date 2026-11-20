@@ -400,6 +400,24 @@ impl PresetActions {
     }
 }
 
+/// Image controls exposed by `tinyctl image`.
+pub const IMAGE_CONTROLS: [&str; 4] = ["hue", "contrast", "saturation", "sharpness"];
+
+fn image_cid(name: &str) -> Result<u32> {
+    Ok(match name {
+        "hue" => controls::CID_HUE,
+        "contrast" => controls::CID_CONTRAST,
+        "saturation" => controls::CID_SATURATION,
+        "sharpness" => controls::CID_SHARPNESS,
+        _ => {
+            return Err(Error::Usage(format!(
+                "image control must be one of {}",
+                IMAGE_CONTROLS.join(", ")
+            )))
+        }
+    })
+}
+
 /// Decode a flat selector-13 preset entry. Layout (60 bytes): status u8
 /// (0 = valid entry), slot index u8 (0-based), pad u16, pitch i16 and yaw i16
 /// in hundredths of a degree, zoom u16 in hundredths of a ratio, then a
@@ -1085,6 +1103,29 @@ impl Device {
 
     /// Gimbal range in degrees for pan or tilt, as reported by this camera.
     /// Tiny 2 and Tiny 3 gimbals differ, so this is queried, not assumed.
+    /// Read an image control (hue, contrast, saturation, sharpness):
+    /// (value, min, max, default). The value is uvcvideo's cache once a
+    /// control has been written, so firmware-side changes do not show.
+    pub fn image(&self, name: &str) -> Result<(i32, crate::ioctl::CtrlRange)> {
+        let cid = image_cid(name)?;
+        Ok((self.fd.get_ctrl(cid)?, self.fd.query_ctrl(cid)?))
+    }
+
+    /// Set an image control within the range the camera reports.
+    pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
+        let cid = image_cid(name)?;
+        let r = self.fd.query_ctrl(cid)?;
+        if !(r.min..=r.max).contains(&value) {
+            return Err(Error::OutOfRange {
+                what: "image value",
+                min: r.min as i64,
+                max: r.max as i64,
+                got: value as i64,
+            });
+        }
+        self.fd.set_ctrl(cid, value)
+    }
+
     pub fn gimbal_range_deg(&self, cid: u32) -> (f64, f64) {
         let fallback = if cid == controls::CID_TILT_ABSOLUTE {
             controls::TILT_MAX

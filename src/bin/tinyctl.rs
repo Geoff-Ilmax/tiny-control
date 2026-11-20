@@ -78,6 +78,9 @@ IMAGE
     exposure auto         Auto exposure
     exposure <1..2500>    Manual exposure time (0.1ms units)
     face-ae on|off        Face-priority auto exposure
+    image                 Show hue, contrast, saturation, sharpness
+    image <name> <value>  Set one (range shown by `image`, usually 1..100)
+    image reset           Restore the camera's default image settings
 
 MISC
     reset                 Safe defaults: wb auto, tracking off, recenter, wake
@@ -342,6 +345,7 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
         }
         "fov" => cmd_fov(id, open()?, rest),
         "exposure" => cmd_exposure(open()?, rest),
+        "image" => cmd_image(open()?, rest, json),
         "face-ae" => {
             let on = need_on_off(rest, "face-ae")?;
             open()?.set_face_ae(on)?;
@@ -603,6 +607,59 @@ fn cmd_ui(cam: &Cam, rest: &[String]) -> Result<()> {
     }
 }
 
+/// `{"hue":{"value":50,"min":1,"max":100,"default":50},...}`; controls the
+/// camera lacks are left out.
+fn image_json(dev: &Device) -> String {
+    let items: Vec<String> = tiny_control::device::IMAGE_CONTROLS
+        .iter()
+        .filter_map(|n| dev.image(n).ok().map(|(v, r)| (n, v, r)))
+        .map(|(n, v, r)| {
+            format!(
+                "\"{n}\":{{\"value\":{v},\"min\":{},\"max\":{},\"default\":{}}}",
+                r.min, r.max, r.default
+            )
+        })
+        .collect();
+    format!("{{{}}}", items.join(","))
+}
+
+/// `image` shows hue/contrast/saturation/sharpness; `image <name> <value>`
+/// sets one; `image reset` restores the camera's defaults.
+fn cmd_image(dev: &Device, rest: &[String], json: bool) -> Result<()> {
+    use tiny_control::device::IMAGE_CONTROLS;
+    match rest {
+        [] => {
+            if json {
+                println!("{}", image_json(dev));
+            } else {
+                for n in IMAGE_CONTROLS {
+                    let (v, r) = dev.image(n)?;
+                    println!("{n:<11}: {v} ({}..{}, default {})", r.min, r.max, r.default);
+                }
+            }
+            Ok(())
+        }
+        [reset] if reset == "reset" => {
+            for n in IMAGE_CONTROLS {
+                let (_, r) = dev.image(n)?;
+                dev.set_image(n, r.default)?;
+            }
+            println!("image controls reset to the camera's defaults");
+            Ok(())
+        }
+        [name, value] => {
+            let v: i32 = value
+                .parse()
+                .map_err(|_| Error::Usage(format!("image {name} <number>")))?;
+            dev.set_image(name, v)
+        }
+        _ => Err(Error::Usage(format!(
+            "image [{} <value> | reset]",
+            IMAGE_CONTROLS.join("|")
+        ))),
+    }
+}
+
 fn cmd_power(cam: &Cam, json: bool) -> Result<()> {
     let state = discover::usb_power_state(&cam.info.node).unwrap_or_else(|| "unknown".into());
     if json {
@@ -656,7 +713,7 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
              \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
              \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
              \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}],\
-             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{},\"ui\":{}{}}}",
+             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{},\"ui\":{},\"image\":{}{}}}",
             json_camera(cam),
             s.asleep,
             json_str(s.tracking.label()),
@@ -679,6 +736,7 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             fov_name(s.fov),
             s.face_ae,
             ui_json(&cam.id),
+            image_json(dev),
             if raw {
                 format!(",\"raw\":\"{}\"", hex(&s.raw))
             } else {

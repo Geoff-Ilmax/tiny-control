@@ -72,6 +72,7 @@ pub struct CtrlRange {
     pub min: i32,
     pub max: i32,
     pub step: i32,
+    pub default: i32,
 }
 
 /// An open handle to a camera video node. Dropping it closes the fd.
@@ -180,6 +181,7 @@ impl VideoFd {
             min: q.minimum,
             max: q.maximum,
             step: q.step,
+            default: q.default_value,
         })
     }
 }
