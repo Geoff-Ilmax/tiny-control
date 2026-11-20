@@ -618,6 +618,35 @@ impl Device {
         Err(self.model.unconfirmed(Feature::PowerOnPose))
     }
 
+    /// Read-only dump of the records that may hold OBSBOT Center's "As
+    /// Initial State" (power-on) settings, for decoding where the tracking
+    /// mode is stored. Each is a header-only GET of a named firmware command;
+    /// nothing is written.
+    pub fn boot_records(&self) -> Vec<(&'static str, Result<Vec<u8>>)> {
+        [
+            ("AI_GET_GIM_BOOT_POS 0x3884", RCV_AI, CMD_BOOT_POS_GET),
+            ("AI_GET_BOOT_PRESETS_ACTIONS 0x3E84", RCV_AI, 0x3E84),
+            ("AI_GET_INITIAL_POSITION_OPA 0x1C44", RCV_AI, 0x1C44),
+            ("CAM_GET_BOOT_STATE 0x0382", RCV_CAMERA, 0x0382),
+        ]
+        .into_iter()
+        .map(|(name, rcv, cmd)| (name, self.transact_get(rcv, cmd, name).map(|r| r.payload)))
+        .collect()
+    }
+
+    /// Raw selector-13 preset entries (all 60 bytes), to look for fields past
+    /// the name. Read-only apart from the cursor-reset echo `presets` uses.
+    pub fn raw_preset_entries(&self) -> Result<Vec<[u8; 60]>> {
+        let list = self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST)?;
+        if list[0] > PRESET_SLOTS || list.iter().all(|&b| b == 0) {
+            return Err(Error::NoReply("on-camera preset list"));
+        }
+        self.fd.xu_set(XU_UNIT, SEL_PRESET_LIST, &list)?;
+        (0..list[0])
+            .map(|_| self.fd.xu_get(XU_UNIT, SEL_PRESET_ENTRY))
+            .collect()
+    }
+
     /// Restore the factory power-on position.
     pub fn reset_boot_pose(&self) -> Result<()> {
         self.model.require(Feature::PowerOnPose)?;

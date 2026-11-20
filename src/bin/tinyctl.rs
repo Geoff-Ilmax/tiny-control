@@ -44,6 +44,7 @@ INFO
     status [--raw]        Show current state (control read; does NOT wake a sleeping camera)
     probe fov|face-ae|track-speed
                           Find which status byte reports a setting (cycles its values)
+    probe boot            Dump the camera's power-on records (read-only diagnostic)
     info                  Serial number, UUID, model, device node
     power                 USB power state from sysfs (opens nothing)
     node                  Print the capture device path (opens nothing)
@@ -707,7 +708,8 @@ fn cmd_probe(dev: &Device, rest: &[String]) -> Result<()> {
             )
         })
         .collect(),
-        _ => return Err(Error::Usage("probe fov|face-ae|track-speed".into())),
+        "boot" => return probe_boot(dev),
+        _ => return Err(Error::Usage("probe fov|face-ae|track-speed|boot".into())),
     };
     if what == "face-ae" {
         dev.set_auto_exposure(true)?;
@@ -732,6 +734,33 @@ fn cmd_probe(dev: &Device, rest: &[String]) -> Result<()> {
     }
     let last = steps.last().map(|(n, _)| *n).unwrap_or("");
     println!("(left at {what} = {last})");
+    Ok(())
+}
+
+/// Dump the power-on records and raw preset entries (read-only).
+fn probe_boot(dev: &Device) -> Result<()> {
+    println!("probe boot on the {} (read-only):", dev.model().name);
+    for (name, r) in dev.boot_records() {
+        match r {
+            Ok(p) if p.is_empty() => println!("  {name}: (empty reply)"),
+            Ok(p) => println!("  {name}: {} bytes\n    {}", p.len(), hex(&p)),
+            Err(e) => println!("  {name}: {e}"),
+        }
+    }
+    match dev.raw_preset_entries() {
+        Ok(entries) => {
+            for e in entries {
+                println!("  preset entry: {}", hex(&e));
+            }
+        }
+        Err(e) => println!("  preset entries: {e}"),
+    }
+    let s = dev.status()?;
+    println!(
+        "  current: tracking {}, {}",
+        s.tracking.label(),
+        if s.asleep { "asleep" } else { "awake" }
+    );
     Ok(())
 }
 
