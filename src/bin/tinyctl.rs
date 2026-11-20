@@ -62,10 +62,9 @@ GIMBAL
     zoom <0..100>         Absolute zoom
     preset list           The camera's 3 preset slots and its power-on position
     preset recall <1|2|3> Move to an on-camera preset (shared with OBSBOT Center)
-    preset save <1|2|3>   Store the current position in that camera slot
-    preset delete <1|2|3> Empty that camera slot
-    preset power-on <1|2|3>  Make that preset the camera's power-on position
-    preset power-on off   Restore the factory power-on position
+    preset save|delete <1|2|3>, preset power-on <1|2|3>|off
+                          DISABLED for now (under investigation): save presets
+                          and the power-on position in OBSBOT Center
 
 IMAGE
     wb auto               Auto white balance (safe fallback)

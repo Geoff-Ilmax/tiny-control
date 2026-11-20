@@ -44,6 +44,23 @@ const CMD_BOOT_POS_RST: u16 = 0x38C4;
 const SEL_PRESET_LIST: u8 = 0x0C;
 const SEL_PRESET_ENTRY: u8 = 0x0D;
 
+/// Writes to the camera's preset store and power-on record are DISABLED.
+/// A Tiny 2 began dropping contrast, saturation and sharpness to zero in
+/// Desk mode (on Windows too) while these writes were being tested, so they
+/// stay off until the cause is understood. Reading and recall still work.
+const PRESET_WRITES_DISABLED: bool = true;
+
+fn preset_writes_allowed() -> Result<()> {
+    if PRESET_WRITES_DISABLED {
+        return Err(Error::Config(
+            "writing on-camera presets and the power-on position is disabled while a camera \
+             side effect is investigated; use OBSBOT Center to save presets for now"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Number of on-camera preset slots (shown to users as 1..=3).
 pub const PRESET_SLOTS: u8 = 3;
 
@@ -545,6 +562,7 @@ impl Device {
     /// Store the current pose in on-camera slot `slot` (create or overwrite),
     /// then read the slot back to confirm the camera kept it.
     pub fn preset_save(&self, slot: u8) -> Result<Pose> {
+        preset_writes_allowed()?;
         self.model.require(Feature::PresetSave)?;
         let idx = check_slot(slot)?;
         let occupied = self.preset(slot)?.pose.is_some();
@@ -571,6 +589,7 @@ impl Device {
 
     /// Empty on-camera slot `slot`.
     pub fn preset_delete(&self, slot: u8) -> Result<()> {
+        preset_writes_allowed()?;
         self.model.require(Feature::PresetSave)?;
         let idx = check_slot(slot)?;
         if self.preset(slot)?.pose.is_none() {
@@ -607,6 +626,7 @@ impl Device {
     /// camera keeps a single boot pose (not a link to a slot); the payload
     /// must be exactly 24 bytes or the firmware silently discards it.
     pub fn set_boot_pose(&self, pose: &Pose) -> Result<()> {
+        preset_writes_allowed()?;
         self.model.require(Feature::PowerOnPose)?;
         self.send_set(RCV_AI, CMD_BOOT_POS_SET, &pose_payload(0, pose, 0.0))?;
         for _ in 0..10 {
@@ -649,6 +669,7 @@ impl Device {
 
     /// Restore the factory power-on position.
     pub fn reset_boot_pose(&self) -> Result<()> {
+        preset_writes_allowed()?;
         self.model.require(Feature::PowerOnPose)?;
         self.send_set(RCV_AI, CMD_BOOT_POS_RST, &[])
     }
@@ -886,6 +907,12 @@ fn decode_auto_sleep(status: &[u8; 60]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_writes_stay_disabled() {
+        let e = preset_writes_allowed().unwrap_err().to_string();
+        assert!(e.contains("disabled"), "{e}");
+    }
 
     #[test]
     fn preset_entry_decodes() {

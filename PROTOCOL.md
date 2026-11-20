@@ -64,6 +64,13 @@ that matter here:
 
 ### On-camera presets and power-on position
 
+> **Writes disabled.** While ADD/UPDATE/DELETE and `AI_SET_GIM_BOOT_POS`
+> were being tested on a Tiny 2, the camera began zeroing contrast,
+> saturation and sharpness whenever Desk mode is on — on Windows as well, so
+> it is stored in the camera. The cause is not yet known; tinyctl refuses
+> these writes until it is. Note that uvcvideo caches those controls, so
+> `v4l2-ctl` keeps reporting the last written values while the image is grey.
+
 Decoded by [lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp) (MIT) on the
 Tiny 2; implemented here in `Device::presets` and friends, **not yet
 hardware-confirmed by this project**. The Tiny 3 reportedly discards preset
