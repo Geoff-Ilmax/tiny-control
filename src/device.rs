@@ -42,6 +42,7 @@ const CMD_BOOT_POS_GET: u16 = 0x3884;
 const CMD_BOOT_POS_RST: u16 = 0x38C4;
 const CMD_PRESET_ACTIONS_GET: u16 = 0x3DC4;
 const CMD_BOOT_ACTIONS_GET: u16 = 0x3E84;
+const CMD_BOOT_ACTIONS_SET: u16 = 0x3E44;
 // Flat (non-framed) XU selectors that expose the preset store.
 const SEL_PRESET_LIST: u8 = 0x0C;
 const SEL_PRESET_ENTRY: u8 = 0x0D;
@@ -766,20 +767,42 @@ impl Device {
         })
     }
 
-    /// Store `pose` as the power-on position and confirm by readback. The
-    /// camera keeps a single boot pose (not a link to a slot); the payload
-    /// must be exactly 24 bytes or the firmware silently discards it.
-    pub fn set_boot_pose(&self, pose: &Pose) -> Result<()> {
-        preset_writes_allowed()?;
+    /// Make on-camera preset `slot` the power-on state, as OBSBOT Center's
+    /// "As Initial State" does: the power-on record becomes a copy of the
+    /// slot's pose (with the slot index first) and of its 40-byte settings
+    /// record, byte for byte. Both are read back and must match exactly;
+    /// otherwise this fails and OBSBOT Center can set it instead.
+    ///
+    /// Only record shapes read from the camera are written: the 24-byte boot
+    /// pose (`AI_SET_GIM_BOOT_POS`, confirmed by replug upstream) and the
+    /// unchanged 40-byte actions record (`AI_SET_BOOT_PRESETS_ACTIONS`, the
+    /// command Center sends).
+    pub fn set_power_on_preset(&self, slot: u8) -> Result<(Pose, PresetActions)> {
         self.model.require(Feature::PowerOnPose)?;
-        self.send_set(RCV_AI, CMD_BOOT_POS_SET, &pose_payload(0, pose, 0.0))?;
+        let idx = check_slot(slot)?;
+        let pose = self.preset(slot)?.pose.ok_or_else(|| {
+            Error::Config(format!(
+                "preset {slot} is empty; save it in OBSBOT Center first"
+            ))
+        })?;
+        let actions = self.preset_actions(slot)?;
+        self.send_set(RCV_AI, CMD_BOOT_POS_SET, &pose_payload(idx, &pose, 0.0))?;
+        std::thread::sleep(Duration::from_millis(200));
+        self.send_set(RCV_AI, CMD_BOOT_ACTIONS_SET, &actions.raw)?;
         for _ in 0..10 {
             std::thread::sleep(Duration::from_millis(200));
-            if self.boot_pose()?.close_to(pose) {
-                return Ok(());
+            if self.boot_slot()? == Some(slot)
+                && self.boot_pose()?.close_to(&pose)
+                && self.boot_actions()?.raw == actions.raw
+            {
+                return Ok((pose, actions));
             }
         }
-        Err(self.model.unconfirmed(Feature::PowerOnPose))
+        Err(Error::Config(format!(
+            "the {} did not confirm the new power-on state; check `preset list` and set it \
+             in OBSBOT Center if it is wrong",
+            self.model.name
+        )))
     }
 
     /// Read-only dump of the records that may hold OBSBOT Center's "As

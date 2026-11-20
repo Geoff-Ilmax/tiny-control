@@ -62,9 +62,10 @@ GIMBAL
     zoom <0..100>         Absolute zoom
     preset list           The camera's 3 preset slots and its power-on position
     preset recall <1|2|3> Move to an on-camera preset (shared with OBSBOT Center)
-    preset save|delete <1|2|3>, preset power-on <1|2|3>|off
-                          DISABLED for now (under investigation): save presets
-                          and the power-on position in OBSBOT Center
+    preset power-on <1|2|3>  Make that preset (position + Additional settings) the
+                          camera's power-on state, like 'As Initial State'
+    preset save|delete <1|2|3>, preset power-on off
+                          DISABLED: use OBSBOT Center
 
 IMAGE
     wb auto               Auto white balance (safe fallback)
@@ -901,6 +902,25 @@ fn actions_summary(a: &tiny_control::device::PresetActions) -> String {
     parts.join(", ")
 }
 
+/// Save the guard-enforced settings (tracking, speed, WB) from a preset.
+fn save_actions_config(id: &str, a: &tiny_control::device::PresetActions) -> Result<()> {
+    if let Some(m) = a.tracking {
+        config::save_setting(id, "tracking", m.label())?;
+    }
+    if let Some(s) = a.sport {
+        config::save_setting(id, "track_speed", if s { "sport" } else { "std" })?;
+    }
+    match (a.auto_wb, a.wb_temp) {
+        (Some(true), _) => config::save_setting(id, "auto_wb", "true")?,
+        (Some(false), Some(t)) => {
+            config::save_setting(id, "wb_temp", &t.to_string())?;
+            config::save_setting(id, "auto_wb", "false")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Apply a preset's settings with commands verified on hardware, and save
 /// the ones tiny-guard enforces so it does not revert them. Returns the
 /// settings that could not be applied.
@@ -1122,14 +1142,15 @@ fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()>
             }
             Some(_) => {
                 let slot = need_slot(rest, "preset power-on <1|2|3>|off")?;
-                let pose = dev.presets()?[slot as usize - 1].pose.ok_or_else(|| {
-                    Error::Config(format!("preset {slot} is empty; save it first"))
-                })?;
-                dev.set_boot_pose(&pose)?;
+                let (pose, actions) = dev.set_power_on_preset(slot)?;
                 println!(
-                    "the camera will power on at preset {slot} ({})",
-                    pose_str(&pose)
+                    "the camera will power on at preset {slot} ({})\n  with: {}",
+                    pose_str(&pose),
+                    actions_summary(&actions)
                 );
+                // tiny-guard enforces saved settings; make it agree with the
+                // camera's power-on state rather than override it at boot.
+                save_actions_config(id, &actions)?;
                 Ok(())
             }
         },

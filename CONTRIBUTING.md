@@ -40,11 +40,12 @@ The Tiny 3 (`ff02`) and Tiny 2 (`fef8`) are verified for every command
    tinyctl -c 1 wb temp 4000
    tinyctl -c 1 hdr on ; tinyctl -c 1 hdr off
    ```
-   On-camera presets (the slots OBSBOT Center uses). Only reading and recall
-   are enabled; preset writes are disabled pending investigation:
+   On-camera presets (the slots OBSBOT Center uses). Reading, recall and
+   power-on are enabled; preset save/delete are disabled:
    ```bash
    tinyctl -c 1 preset list
-   tinyctl -c 1 preset recall 1
+   tinyctl -c 1 preset recall 1          # also applies the preset's settings
+   tinyctl -c 1 preset power-on 1        # then replug: it should start there
    ```
    With several cameras, also check `tinyctl -c all status` and that changing
    one camera leaves the others alone.

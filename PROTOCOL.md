@@ -64,6 +64,13 @@ that matter here:
 
 ### On-camera presets and power-on position
 
+> **Power-on write re-enabled (copy + exact readback).** `tinyctl preset
+> power-on N` writes `AI_SET_GIM_BOOT_POS` with the slot index in field 0 and
+> the slot's pose, then `AI_SET_BOOT_PRESETS_ACTIONS` with the slot's 40-byte
+> actions record unchanged, and requires `0x3884`/`0x3E84` to read back the
+> same slot, pose and bytes. Preset save/delete and the boot-pose reset stay
+> disabled.
+>
 > **Writes disabled.** While ADD/UPDATE/DELETE and `AI_SET_GIM_BOOT_POS`
 > were being tested on a Tiny 2, the camera began zeroing contrast,
 > saturation and sharpness whenever Desk mode is on — on Windows as well, so
