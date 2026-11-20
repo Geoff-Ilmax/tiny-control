@@ -22,8 +22,8 @@ Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
 | Model | USB ID | Product string | Notes |
 |---|---|---|---|
 | Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
-| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; all commands verified except face-AE / tracking speed |
-| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; all commands verified except face-AE / tracking speed |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; every command verified except tracking speed (unsupported) |
+| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; every command verified |
 
 Model differences handled in code:
 
@@ -217,7 +217,10 @@ Live blob observed: `2e0100020000000100 01 78 0000 01 01 …`. Decoded offsets
 | `0x06` | HDR (bool) | ✅ reacts to the HDR TLV |
 | `0x18` | AI mode enable | ✅ `00` idle → `02` when human-tracking on |
 | `0x1c` | AI framing | ✅ tracks the submode |
-| `0x21` | tracking speed (0=std, 2=sport) | ⚠️ unconfirmed — no visible change on Tiny 2 / Tiny 3; `tinyctl` now checks this readback after `track speed` |
+| `0x07` | face-priority AE (0 global, 1 face) | ✅ Tiny 2 + Tiny 3 (`tinyctl probe face-ae`) |
+| `0x11` | field of view (0 wide, 1 medium, 2 narrow) | ✅ Tiny 2 + Tiny 3 (`tinyctl probe fov`). Byte `0x04` also moves with FOV (`00/06/0f` Tiny 3, `00/05/0f` Tiny 2) — likely the crop amount |
+| `0x21` | tracking speed (0=std, 2=sport) — Tiny 2 lineage notes | ⚠️ **wrong on Tiny 2** (it reports at `0x24`); unexercised on Tiny 3 Lite |
+| `0x24` | tracking speed on the **Tiny 2** (0=std, 2=sport) | ✅ Tiny 2 (`tinyctl probe track-speed`). The Tiny 3 accepts the speed frame but no status byte follows it and no visible change was seen, so it is treated as unsupported there |
 
 **Reading the status block does not wake the camera.** It is a control GET, not
 a stream, so it can be read on a *sleeping* camera and leaves it asleep

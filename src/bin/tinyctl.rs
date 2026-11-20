@@ -345,34 +345,53 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
     }?;
 
     // A successful ioctl only means transport success; confirm the camera
-    // actually applied vendor settings, and say which model refused.
+    // actually applied the setting, and say which model refused. The AI and
+    // power transitions can take a moment (longer right after FOV/exposure
+    // changes), so poll for up to ~2s before calling it unconfirmed.
     if matches!(
         cmd,
-        "sleep" | "wake" | "toggle" | "track" | "hdr" | "wb" | "reset"
+        "sleep" | "wake" | "toggle" | "track" | "hdr" | "wb" | "reset" | "fov" | "face-ae"
     ) {
-        std::thread::sleep(std::time::Duration::from_millis(300));
         let dev = open()?;
-        let actual = dev.status()?;
         let desired = config::Config::load_for(id);
-        let failed = match cmd {
-            "sleep" | "wake" | "toggle" => {
-                (actual.asleep != (desired.power == "sleep")).then_some(Feature::Sleep)
-            }
-            "track" if rest.first().map(String::as_str) == Some("speed") => {
-                let want = desired.track_speed.as_deref() == Some("sport");
-                (actual.tracking_sport != want).then_some(Feature::TrackSpeed)
-            }
-            "track" => {
-                (actual.tracking != desired.tracking).then_some(Feature::Tracking(desired.tracking))
-            }
-            "hdr" => (desired.hdr != Some(actual.hdr)).then_some(Feature::Hdr),
-            "wb" => (actual.auto_wb != desired.auto_wb
-                || (!desired.auto_wb && actual.wb_temp != desired.wb_temp))
-                .then_some(Feature::WhiteBalance),
-            "reset" => (actual.asleep || actual.tracking != TrackMode::Off || !actual.auto_wb)
-                .then_some(Feature::Tracking(TrackMode::Off)),
-            _ => None,
+        let check = || -> Result<Option<Feature>> {
+            let actual = dev.status()?;
+            Ok(match cmd {
+                "sleep" | "wake" | "toggle" => {
+                    (actual.asleep != (desired.power == "sleep")).then_some(Feature::Sleep)
+                }
+                "track" if rest.first().map(String::as_str) == Some("speed") => {
+                    let want = desired.track_speed.as_deref() == Some("sport");
+                    // Models that don't report speed can't be confirmed; the
+                    // model table already refuses it where it is known absent.
+                    actual
+                        .tracking_sport
+                        .is_some_and(|s| s != want)
+                        .then_some(Feature::TrackSpeed)
+                }
+                "track" => (actual.tracking != desired.tracking)
+                    .then_some(Feature::Tracking(desired.tracking)),
+                "hdr" => (desired.hdr != Some(actual.hdr)).then_some(Feature::Hdr),
+                "wb" => (actual.auto_wb != desired.auto_wb
+                    || (!desired.auto_wb && actual.wb_temp != desired.wb_temp))
+                    .then_some(Feature::WhiteBalance),
+                "fov" => {
+                    (desired.fov.as_deref() != Some(fov_name(actual.fov))).then_some(Feature::Fov)
+                }
+                "face-ae" => (desired.face_ae != Some(actual.face_ae)).then_some(Feature::FaceAe),
+                "reset" => (actual.asleep || actual.tracking != TrackMode::Off || !actual.auto_wb)
+                    .then_some(Feature::Tracking(TrackMode::Off)),
+                _ => None,
+            })
         };
+        let mut failed = None;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            failed = check()?;
+            if failed.is_none() {
+                break;
+            }
+        }
         if let Some(f) = failed {
             return Err(dev.model().unconfirmed(f));
         }
@@ -552,6 +571,15 @@ fn cmd_power(cam: &Cam, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn fov_name(level: u8) -> &'static str {
+    match level {
+        0 => "wide",
+        1 => "medium",
+        2 => "narrow",
+        _ => "unknown",
+    }
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter()
         .map(|x| format!("{x:02x}"))
@@ -577,11 +605,11 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
              \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
              \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
              \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}],\
-             \"track_speed\":\"{}\",\"fov_last_set\":{},\"face_ae_last_set\":{}{}}}",
+             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{}{}}}",
             json_camera(cam),
             s.asleep,
             json_str(s.tracking.label()),
-            s.tracking_sport,
+            s.tracking_sport == Some(true),
             s.hdr,
             s.auto_wb,
             s.wb_temp,
@@ -596,12 +624,9 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             pan_max,
             tilt_min,
             tilt_max,
-            if s.tracking_sport { "sport" } else { "std" },
-            json_opt(desired.fov.as_deref()),
-            desired
-                .face_ae
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| "null".into()),
+            json_opt(s.tracking_sport.map(|b| if b { "sport" } else { "std" })),
+            fov_name(s.fov),
+            s.face_ae,
             if raw {
                 format!(",\"raw\":\"{}\"", hex(&s.raw))
             } else {
@@ -621,7 +646,11 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
         println!("tracking    : {}", s.tracking.label());
         println!(
             "track speed : {}",
-            if s.tracking_sport { "sport" } else { "std" }
+            match s.tracking_sport {
+                Some(true) => "sport",
+                Some(false) => "std",
+                None => "n/a (not supported on this model)",
+            }
         );
         println!("hdr         : {}", onoff(s.hdr));
         println!(
@@ -636,23 +665,8 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             "exposure    : {}",
             if s.auto_exposure { "auto" } else { "manual" }
         );
-        // Not decoded from the camera yet (see `tinyctl probe`): show the
-        // last value tinyctl set, and say so.
-        println!(
-            "fov         : {}",
-            desired
-                .fov
-                .as_deref()
-                .map(|f| format!("{f} (last set; not read from camera)"))
-                .unwrap_or_else(|| "unknown (not set with tinyctl)".into())
-        );
-        println!(
-            "face AE     : {}",
-            desired
-                .face_ae
-                .map(|b| format!("{} (last set; not read from camera)", onoff(b)))
-                .unwrap_or_else(|| "unknown (not set with tinyctl)".into())
-        );
+        println!("fov         : {}", fov_name(s.fov));
+        println!("face AE     : {}", onoff(s.face_ae));
         println!(
             "gimbal      : pan {:.1}° ({pan_min:.0}..{pan_max:.0}), tilt {:.1}° ({tilt_min:.0}..{tilt_max:.0}), zoom {}",
             s.pan_deg, s.tilt_deg, s.zoom

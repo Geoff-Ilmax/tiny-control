@@ -45,7 +45,9 @@ const ST_HDR: usize = 0x06;
 const ST_AUTO_SLEEP: usize = 0x0a;
 const ST_AI_CATEGORY: usize = 0x18;
 const ST_AI_SUBMODE: usize = 0x1c;
-const ST_TRACK_SPEED: usize = 0x21;
+const ST_FACE_AE: usize = 0x07; // 0 global / 1 face (verified Tiny 2 + Tiny 3)
+const ST_FOV: usize = 0x11; // 0 wide / 1 medium / 2 narrow (verified Tiny 2 + Tiny 3)
+                            // Tracking speed's offset differs per model: see Model::track_speed_offset.
 
 /// AI tracking mode. The wire encoding is `[0x16, 0x02, category, submode]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +142,12 @@ pub struct Status {
     pub auto_sleep_seconds: u16,
     pub hdr: bool,
     pub tracking: TrackMode,
-    pub tracking_sport: bool,
+    /// Some(true) = sport. None when this model does not report it.
+    pub tracking_sport: Option<bool>,
+    /// Field-of-view level: 0 wide, 1 medium, 2 narrow.
+    pub fov: u8,
+    /// Face-priority auto-exposure.
+    pub face_ae: bool,
     pub auto_wb: bool,
     pub wb_temp: i32,
     pub pan_deg: f64,
@@ -529,7 +536,9 @@ impl Device {
             auto_sleep_seconds: decode_auto_sleep(&s),
             hdr: s[ST_HDR] != 0,
             tracking: TrackMode::from_status(s[ST_AI_CATEGORY], s[ST_AI_SUBMODE]),
-            tracking_sport: s[ST_TRACK_SPEED] == 2,
+            tracking_sport: self.model.track_speed_offset.map(|o| s[o] == 2),
+            fov: s[ST_FOV],
+            face_ae: s[ST_FACE_AE] != 0,
             auto_wb,
             wb_temp,
             pan_deg: pan as f64 / controls::ASEC_PER_DEG,

@@ -6,8 +6,8 @@ real hardware** — especially the Tiny 2 and Tiny 3, and multi-camera setups.
 ## Model owners: please test
 
 The protocol is verified upstream on an **OBSBOT Tiny 3 Lite** (`3564:ff04`).
-The Tiny 3 (`ff02`) and Tiny 2 (`fef8`) are verified for every command except
-face-priority AE and tracking speed, which are still untested on them
+The Tiny 3 (`ff02`) and Tiny 2 (`fef8`) are verified for every command
+(tracking speed is unsupported on the Tiny 3)
 ([`src/model.rs`](src/model.rs)). If you own one, please help:
 
 1. **List your cameras** (reads sysfs only; opens nothing except a one-time,
@@ -49,7 +49,8 @@ face-priority AE and tracking speed, which are still untested on them
 
 ### Mapping a status byte
 
-FOV and face-AE readback offsets are unknown. `tinyctl -c 1 probe fov` (or
+Readback offsets can differ per model (tracking speed moved from `0x21` to
+`0x24` on the Tiny 2). `tinyctl -c 1 probe fov` (or
 `face-ae`, `track-speed`) sets each value in turn, reads the 60-byte status
 block after each, and prints the offsets whose byte follows the value. Please
 report its output for your model; `tinyctl -c 1 status --raw` dumps the block.

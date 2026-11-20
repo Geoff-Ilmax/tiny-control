@@ -136,6 +136,9 @@ pub struct Model {
     verified: &'static [Feature],
     /// Features known to be absent on this model.
     unsupported: &'static [Feature],
+    /// Status-block byte that reports tracking speed (0 std / 2 sport), where
+    /// the model reports it at all. It moved between generations.
+    pub track_speed_offset: Option<usize>,
 }
 
 impl Model {
@@ -201,8 +204,8 @@ const TINY3_LITE_VERIFIED: &[Feature] = &[
 
 /// Features confirmed on the Tiny 3 (ff02) and Tiny 2 (fef8) on real
 /// hardware: sleep, wake, power, status, info, track, pan, tilt, zoom, wb,
-/// hdr, fov, exposure and the firmware auto-sleep timer. Face-AE and tracking
-/// speed are not confirmed (no visible effect observed yet).
+/// hdr, fov, exposure and the firmware auto-sleep timer. Face-AE is confirmed
+/// by status readback (byte 0x07) on both.
 /// (power/status/info are reads and need no feature gate.)
 const TINY3_TINY2_VERIFIED: &[Feature] = &[
     Feature::Sleep,
@@ -214,6 +217,22 @@ const TINY3_TINY2_VERIFIED: &[Feature] = &[
     Feature::Hdr,
     Feature::Fov,
     Feature::Exposure,
+    Feature::FaceAe,
+];
+
+/// The Tiny 2 also reports tracking speed (status byte 0x24 follows std/sport).
+const TINY2_VERIFIED: &[Feature] = &[
+    Feature::Sleep,
+    Feature::AutoSleepTimer,
+    Feature::Tracking(TrackMode::Off),
+    Feature::Gimbal,
+    Feature::Zoom,
+    Feature::WhiteBalance,
+    Feature::Hdr,
+    Feature::Fov,
+    Feature::Exposure,
+    Feature::FaceAe,
+    Feature::TrackSpeed,
 ];
 
 pub static MODELS: &[Model] = &[
@@ -224,6 +243,8 @@ pub static MODELS: &[Model] = &[
         family: Family::Tiny3,
         verified: TINY3_LITE_VERIFIED,
         unsupported: &[],
+        // From the Tiny 2 lineage notes; never exercised on the Lite.
+        track_speed_offset: Some(0x21),
     },
     Model {
         id: "tiny3",
@@ -231,15 +252,19 @@ pub static MODELS: &[Model] = &[
         pid: "ff02",
         family: Family::Tiny3,
         verified: TINY3_TINY2_VERIFIED,
-        unsupported: &[],
+        // The speed frame is accepted but no status byte follows it and no
+        // visible change was seen: treat as absent on this model.
+        unsupported: &[Feature::TrackSpeed],
+        track_speed_offset: None,
     },
     Model {
         id: "tiny2",
         name: "OBSBOT Tiny 2",
         pid: "fef8",
         family: Family::Tiny2,
-        verified: TINY3_TINY2_VERIFIED,
+        verified: TINY2_VERIFIED,
         unsupported: &[],
+        track_speed_offset: Some(0x24),
     },
 ];
 
@@ -250,6 +275,7 @@ pub static UNKNOWN: Model = Model {
     family: Family::Unknown,
     verified: &[],
     unsupported: &[],
+    track_speed_offset: Some(0x21),
 };
 
 /// Look up a model by USB product ID (case-insensitive). Unknown OBSBOT PIDs
@@ -301,16 +327,21 @@ mod tests {
 
     #[test]
     fn support_table_for_tiny2_and_tiny3() {
-        for pid in ["fef8", "ff02"] {
+        let not_verified = |pid: &str| -> Vec<(String, Support)> {
             let m = by_pid(pid);
-            let untested: Vec<String> = feature_table()
+            feature_table()
                 .into_iter()
-                .filter(|(f, _)| m.support(*f) != Support::Verified)
-                .map(|(f, _)| f.label())
-                .collect();
-            println!("{pid}: untested = {untested:?}");
-            assert_eq!(untested, ["tracking speed", "face auto-exposure"]);
-        }
+                .map(|(f, _)| (f.label(), m.support(f)))
+                .filter(|(_, s)| *s != Support::Verified)
+                .collect()
+        };
+        assert_eq!(not_verified("fef8"), []);
+        assert_eq!(
+            not_verified("ff02"),
+            [("tracking speed".to_string(), Support::Unsupported)]
+        );
+        assert_eq!(by_pid("fef8").track_speed_offset, Some(0x24));
+        assert_eq!(by_pid("ff02").track_speed_offset, None);
     }
 
     #[test]
@@ -322,6 +353,7 @@ mod tests {
             family: Family::Unknown,
             verified: &[Feature::Tracking(TrackMode::Off)],
             unsupported: &[Feature::Tracking(TrackMode::Whiteboard), Feature::Fov],
+            track_speed_offset: None,
         };
         assert_eq!(
             M.support(Feature::Tracking(TrackMode::Whiteboard)),

@@ -38,16 +38,14 @@ All share one control protocol; only the USB product ID differs.
 | Model | USB ID | Status |
 |---|---|---|
 | OBSBOT Tiny 3 Lite | `3564:ff04` | ✅ **Verified** upstream on real hardware (firmware 0510) |
-| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: all commands except face-AE and tracking speed |
-| OBSBOT Tiny 2 | `3564:fef8` | ✅ **Verified**: all commands except face-AE and tracking speed |
+| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: every command (tracking speed is not supported on this model) |
+| OBSBOT Tiny 2 | `3564:fef8` | ✅ **Verified**: every command |
 | Other OBSBOT (`3564:*`) | | ⚠️ Detected as "unrecognized model", every feature treated as untested |
 
-Verified on a Tiny 2 and a Tiny 3 running together. Face-priority AE and
-tracking speed are accepted by both cameras but have no confirmed visible
-effect yet. FOV and face-AE are not yet decoded from the camera's status, so
-`status` shows the value tinyctl last set (labelled as such); `tinyctl -c
-<camera> probe fov|face-ae|track-speed` looks for the status byte that
-reports each one.
+Verified on a Tiny 2 and a Tiny 3 running together. `status` reads every
+setting back from the camera, including FOV, face-AE and (on the Tiny 2)
+tracking speed. For a new model, `tinyctl -c <camera> probe
+fov|face-ae|track-speed` finds the status byte that reports each one.
 
 **Untested means loud, not silent.** Each feature has a support level per
 model ([`src/model.rs`](src/model.rs)): features known to be missing are
