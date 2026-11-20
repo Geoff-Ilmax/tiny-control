@@ -129,9 +129,9 @@ tinyctl list
 # * 1  RMOWAAAAAAAAAA   -          Tiny 3               1-4.4    /dev/video2
 #   2  RMOWBBBBBBBBBB   -          Tiny 2               3-4.1    /dev/video0
 
-tinyctl alias 1 desk           # name cameras once...
+tinyctl alias 1 main           # name cameras once...
 tinyctl alias 2 overhead
-tinyctl -c desk status         # ...then use the name
+tinyctl -c main status         # ...then use the name
 
 tinyctl select overhead        # remember a "selected" camera (bar widget + hotkeys)
 tinyctl -c selected toggle
@@ -147,35 +147,43 @@ keyed by USB port instead, shown as `port-1-4.4`.)
 
 ### Control it
 
+These examples use `-c 1` (the first camera in `tinyctl list`); any of the
+selectors above works in its place — an alias such as `-c main`, a serial,
+`-c selected` or `-c all`.
+
 ```bash
-tinyctl -c desk sleep                # camera off (LED off, gimbal parks)
-tinyctl -c desk wake                 # back on
-tinyctl -c desk toggle               # sleep <-> wake (prints the new state)
-tinyctl -c desk status               # current state (does NOT wake a sleeping camera)
-tinyctl -c desk info                 # model, serial number, UUID, USB port
+tinyctl -c 1 sleep                # camera off (LED off, gimbal parks)
+tinyctl -c 1 wake                 # back on
+tinyctl -c 1 toggle               # sleep <-> wake (prints the new state)
+tinyctl -c 1 status               # current state (does NOT wake a sleeping camera)
+tinyctl -c 1 info                 # model, serial number, UUID, USB port
 
-tinyctl -c desk track on             # AI subject tracking
-tinyctl -c desk track upper          # upper-body framing
-tinyctl -c desk track off
+tinyctl -c 1 track on             # AI subject tracking
+tinyctl -c 1 track desk           # desk mode (any mode in `tinyctl --help`)
+tinyctl -c 1 track upper          # upper-body framing (Tiny 2 only)
+tinyctl -c 1 track off
 
-tinyctl -c desk pan 20               # absolute pan, degrees (range shown by `status`)
-tinyctl -c desk tilt -10
-tinyctl -c desk zoom 60              # 0..100
-tinyctl -c desk recenter
-tinyctl -c desk preset list          # the camera's own slots 1-3 + power-on position
-tinyctl -c desk preset recall 2      # same slots OBSBOT Center uses; also applies the
-                                     # preset's Additional settings (tracking, image, WB)
-tinyctl -c desk preset power-on 2    # power on at preset 2 with its Additional settings
+tinyctl -c 1 pan 20               # absolute pan, degrees (range shown by `status`)
+tinyctl -c 1 tilt -10
+tinyctl -c 1 zoom 60              # 0..100
+tinyctl -c 1 recenter
+tinyctl -c 1 preset list          # the camera's own slots 1-3 + power-on position
+tinyctl -c 1 preset recall 2      # same slots OBSBOT Center uses; also applies the
+                                  # preset's Additional settings (tracking, image, WB)
+tinyctl -c 1 preset power-on 2    # power on at preset 2 with its Additional settings
 # preset save / delete and power-on off are disabled: an earlier save wrote a
 # Tiny 2's preset settings record wrongly. Use OBSBOT Center for those.
 
-tinyctl -c desk wb temp 4000         # manual white balance, 4000K
-tinyctl -c desk wb auto
-tinyctl -c desk hdr on
-tinyctl -c desk exposure auto        # or: exposure 330
+tinyctl -c 1 wb temp 4000         # manual white balance, 4000K
+tinyctl -c 1 wb auto
+tinyctl -c 1 hdr on
+tinyctl -c 1 exposure auto        # or: exposure 330
+tinyctl -c 1 image                # hue, contrast, saturation, sharpness
+tinyctl -c 1 image hue 50         # set one (1..100); `image reset` for defaults
+tinyctl -c 1 support              # what is verified / unsupported on this model
 
-tinyctl -c desk --json status        # machine-readable output
-tinyctl list --json                  # camera list for scripts / the bar widget
+tinyctl -c 1 --json status        # machine-readable output
+tinyctl list --json               # camera list for scripts / the bar widget
 ```
 
 With `-c all --json`, one JSON object is printed per camera, one per line; every
@@ -257,7 +265,7 @@ comments of [`packaging/pipewire/tiny-audio.conf`](packaging/pipewire/tiny-audio
   - `SUPER + ALT + N` — select the next camera
 
   To pin a key to one camera regardless of the selection, use its alias:
-  `tinyctl -c desk toggle`.
+  `tinyctl -c 1 toggle`.
 - **Menu** — merge [`packaging/omarchy-menu.jsonc`](packaging/omarchy-menu.jsonc)
   into `~/.config/omarchy/extensions/omarchy-menu.jsonc` for a **Camera** submenu.
 - **systemd** — [`packaging/systemd/tiny-guard.service`](packaging/systemd/tiny-guard.service)
