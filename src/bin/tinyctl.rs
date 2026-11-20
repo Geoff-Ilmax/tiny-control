@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 use tiny_control::camera::{self, Cam};
 use tiny_control::config::{self, Preset};
-use tiny_control::model::Feature;
+use tiny_control::model::{self, Feature};
 use tiny_control::{controls, discover, Device, Error, Result, TrackMode};
 
 const USAGE: &str = "\
@@ -45,6 +45,7 @@ INFO
     info                  Serial number, UUID, model, device node
     power                 USB power state from sysfs (opens nothing)
     node                  Print the capture device path (opens nothing)
+    support               Which features are verified on this model (opens nothing)
 
 AI TRACKING
     track on|off|toggle   Enable/disable tracking
@@ -262,6 +263,7 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             println!("{}", cam.info.node);
             return Ok(());
         }
+        "support" => return cmd_support(cam, json),
         _ => {}
     }
 
@@ -488,6 +490,37 @@ fn cmd_alias(o: &Opts, rest: &[String]) -> Result<()> {
     } else {
         config::set_alias(&cam.id, Some(name))?;
         println!("{} is now '{name}'", cam.id);
+    }
+    Ok(())
+}
+
+fn cmd_support(cam: &Cam, json: bool) -> Result<()> {
+    let m = cam.info.model;
+    let rows: Vec<(String, &str, &str)> = model::feature_table()
+        .into_iter()
+        .map(|(f, cmd)| (f.label(), cmd, m.support(f).label()))
+        .collect();
+    if json {
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(f, c, s)| {
+                format!(
+                    "{{\"feature\":\"{}\",\"command\":\"{}\",\"support\":\"{s}\"}}",
+                    json_str(f),
+                    json_str(c)
+                )
+            })
+            .collect();
+        println!(
+            "{{{},\"features\":[{}]}}",
+            json_camera(cam),
+            items.join(",")
+        );
+        return Ok(());
+    }
+    println!("{} ({})", cam.label(), m.name);
+    for (f, c, s) in &rows {
+        println!("  {s:<11} {f:<28} tinyctl {c}");
     }
     Ok(())
 }

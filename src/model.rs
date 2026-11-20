@@ -71,6 +71,49 @@ impl Feature {
     }
 }
 
+impl Support {
+    pub fn label(self) -> &'static str {
+        match self {
+            Support::Verified => "verified",
+            Support::Expected => "untested",
+            Support::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// Every command-level feature, with the `tinyctl` command that exercises it,
+/// for `tinyctl support`. Tracking modes are listed individually.
+pub fn feature_table() -> Vec<(Feature, &'static str)> {
+    let mut v = vec![
+        (Feature::Sleep, "sleep / wake / toggle"),
+        (Feature::AutoSleepTimer, "wake (firmware sleep timer)"),
+    ];
+    for (m, cmd) in [
+        (TrackMode::Normal, "track on"),
+        (TrackMode::UpperBody, "track upper"),
+        (TrackMode::CloseUp, "track close"),
+        (TrackMode::Headless, "track headless"),
+        (TrackMode::LowerBody, "track lower"),
+        (TrackMode::Group, "track group"),
+        (TrackMode::Hand, "track hand"),
+        (TrackMode::Whiteboard, "track whiteboard"),
+        (TrackMode::Desk, "track desk"),
+    ] {
+        v.push((Feature::Tracking(m), cmd));
+    }
+    v.extend([
+        (Feature::TrackSpeed, "track speed std|sport"),
+        (Feature::Gimbal, "pan / tilt / recenter"),
+        (Feature::Zoom, "zoom"),
+        (Feature::WhiteBalance, "wb auto|temp|pin"),
+        (Feature::Hdr, "hdr"),
+        (Feature::Fov, "fov"),
+        (Feature::Exposure, "exposure"),
+        (Feature::FaceAe, "face-ae"),
+    ]);
+    v
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     Tiny2,
@@ -249,6 +292,30 @@ mod tests {
             assert_eq!(m.support(Feature::Fov), Support::Expected);
         }
         assert!(!by_pid("abcd").is_verified());
+    }
+
+    #[test]
+    fn support_table_for_tiny2_and_tiny3() {
+        for pid in ["fef8", "ff02"] {
+            let m = by_pid(pid);
+            let untested: Vec<String> = feature_table()
+                .into_iter()
+                .filter(|(f, _)| m.support(*f) != Support::Verified)
+                .map(|(f, _)| f.label())
+                .collect();
+            println!("{pid}: untested = {untested:?}");
+            assert_eq!(
+                untested,
+                [
+                    "firmware auto-sleep timer",
+                    "tracking speed",
+                    "zoom",
+                    "field of view",
+                    "exposure",
+                    "face auto-exposure"
+                ]
+            );
+        }
     }
 
     #[test]
