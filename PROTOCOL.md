@@ -156,6 +156,38 @@ not. The Tiny 3 reportedly discards preset
   - Flat selector `0x0C` gives no usable list, and slots without a preset do
     not answer `0x3DC4`. tinyctl refuses preset commands on the Tiny 3
     family until these are decoded; `probe boot` dumps them.
+- **Tiny 3 actions record, decode from three Center presets** (40 bytes via
+  `0x3DC4`; the power-on copy equals the "As Initial State" preset's):
+
+  | Byte(s) | Field | P1 | P2 | P3 | Notes |
+  |---|---|---|---|---|---|
+  | 0 | (Tiny 2 AI mode) | `ff` | `ff` | `ff` | unused on the Tiny 3 |
+  | 1 | AI mode? | `06` | `05` | `07` | P1 voice+single, P2 desk, P3 voice+group — **not decoded** |
+  | 2 / 3 | auto focus / AF mode | `01`/`01` | `01`/`00` | `00`/`01` | on/off; `01` face, `00` global |
+  | 4–5 | manual focus u16 | 0 | 0 | 52 | slider ~50% |
+  | 6 / 7 | auto exposure / AE mode | `01`/`01` | `01`/`00` | `00`/`01` | same as Tiny 2 |
+  | 8 | AE compensation | `09` | `0c` | `09` | same as Tiny 2 (9 = 0, +3 per EV) |
+  | 9 | shutter? | `32` | `32` | `1f` | P3 1/320 — likely an index |
+  | 11 | ISO / 100 | `01` | `01` | `16` | P3 ISO 2200 |
+  | 13 | WB mode | `00` | `00` | `05` | `05` manual |
+  | 14–15 | WB temp u16 | 4000 | 4000 | 4000 | P3 4000K |
+  | 16 | image adjust present | `01` | `01` | `00` | P3 has no image values |
+  | 17 / 19 | blur on / level | `01`/`02` | `00`/`02` | `00`/`00` | |
+  | 20–23 | contrast, sat, sharp, hue | 46 47 48 49 | 36 37 38 39 | `ff`×4 | |
+  | 24 | ? | `00` | `00` | `01` | P3 only: group or auto zoom full body |
+  | 25 | ? | `02` | `00` | `02` | on with human tracking? |
+  | 27, 29 | constant | `8d`, `a2` | | | |
+  | 31 / 32 | AWB shift B-A / G-M | `26`/`2b` | `18`/`10` | `1c`/`1c` | value = (byte − 28) / 4: 2.5/3.75, −1/−3, 0/0 |
+  | 33 / 34 | ISO range lower / upper | `ff`/`ff` | `02`/`07` | `ff`/`ff` | index 1 = 100 … 8 = 12800 (P2 200–6400); `ff` = full range |
+
+- **Tiny 3 boot pose** (38 bytes, P2 as initial state):
+  `01 00 00 00 | 00 | −4.58 | −3.10 | 0 | 1.66 | 0.5 | 0.5 | 0.6024 | 1.0 | 00`
+  — slot index, pad, unaligned f32 yaw, pitch, roll, zoom, then what looks
+  like a crop window: centre 0.5/0.5 and width 0.6024 = 1/1.66.
+- **Tiny 3 preset poses are not readable** by any path tried: flat selector
+  `0x0C` is all zeros and the framed list/value/name GETs (`0x3B44`, `0x3A44`,
+  `0x3B04`) do not answer. Only the actions records (and the power-on pose)
+  are.
 - Replies: flags `0x09` is an ACK with no payload (stale bytes follow), `0x89`
   an error with the code at bytes 14–15; both are handled by `frame::parse`.
 
