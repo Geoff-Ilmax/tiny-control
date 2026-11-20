@@ -4,7 +4,7 @@
 #
 # Keys at the top apply to every camera. A [camera <ID>] section overrides them
 # for one camera; <ID> is the serial shown by `tinyctl list`. tinyctl writes
-# these sections for you (e.g. `tinyctl -c desk wb temp 4500`), so you rarely
+# these sections for you (e.g. `tinyctl -c main wb temp 4500`), so you rarely
 # need to edit this file by hand.
 
 # Target white-balance temperature (Kelvin, 2000..10000) that tiny-guard
@@ -24,7 +24,7 @@ auto_wb = false
 # Example per-camera overrides:
 #
 # [camera RMOWUHI3111PLN]
-# alias = desk
+# alias = main
 # wb_temp = 4500
 # tracking = upper-body
 #

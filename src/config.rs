@@ -9,7 +9,7 @@
 //! wb_temp = 4000          # default for all cameras
 //!
 //! [camera RMOWUHI3111PLN]
-//! alias = desk
+//! alias = main
 //! tracking = upper-body
 //! wb_temp = 4500
 //! ```

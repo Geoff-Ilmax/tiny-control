@@ -25,6 +25,6 @@ o.bind("SUPER + ALT + N", "Next camera",
   [[sh -c 'notify-send -a tiny-control "Camera" "$(tinyctl select next 2>&1)"']])
 
 -- Pinned to one camera regardless of the selection: use its alias (set with
--- `tinyctl alias <camera> desk`). Sleep every camera at once with `-c all`.
--- o.bind("SUPER + ALT + 1", "Desk camera sleep toggle", "tinyctl -c desk toggle")
+-- `tinyctl alias <camera> main`). Sleep every camera at once with `-c all`.
+-- o.bind("SUPER + ALT + 1", "Main camera sleep toggle", "tinyctl -c main toggle")
 -- o.bind("SUPER + ALT + S", "All cameras sleep", "tinyctl -c all sleep")
