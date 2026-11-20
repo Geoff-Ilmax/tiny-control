@@ -1,14 +1,11 @@
 # Maintainer: Geoff-Ilmax (forked from obsbot-tiny3-linux by Josh Lambert)
 #
-#
-# NOTE: this copy is a placeholder until the fork tags its first release;
-# the release workflow overwrites it with the pinned, rendered PKGBUILD.
 # TEMPLATE. The release workflow renders this into the real PKGBUILD for each
-# tag: @PKGVER@ becomes the version and @SHA256@ the sha256 of that release's
+# tag: 0.2.0 becomes the version and cb97b37caad03ace7adf192b159bfb58c3c652dae28f6fca790e5caaa35ed7ef the sha256 of that release's
 # source tarball. The rendered file is published as a release asset and
 # committed back to packaging/PKGBUILD — never edit that copy by hand.
 pkgname=tiny-control
-pkgver=@PKGVER@
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Linux control suite for the OBSBOT Tiny 3 series webcam (sleep/wake, AI tracking, gimbal, white balance)"
 arch=('x86_64' 'aarch64')
@@ -21,7 +18,7 @@ backup=('etc/tiny-control/config')
 # Pinned to the release asset we publish and checksum ourselves, not to
 # GitHub's auto-generated /archive/ tarball (which GitHub can regenerate).
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('@SHA256@')
+sha256sums=('cb97b37caad03ace7adf192b159bfb58c3c652dae28f6fca790e5caaa35ed7ef')
 
 prepare() {
     cd "$pkgname-$pkgver"
