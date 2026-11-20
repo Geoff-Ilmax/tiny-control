@@ -252,7 +252,8 @@ comments of [`packaging/pipewire/tiny-audio.conf`](packaging/pipewire/tiny-audio
 
 The remote's USB dongle (`1106:b106`) works without OBSBOT Center. It is a
 plain keyboard that sends a Ctrl+Alt shortcut per button; `tiny-remote` (a
-per-user service enabled by `install.sh`) reads it and runs the matching
+per-user service; `install.sh` asks whether to enable it, defaulting to yes
+when the dongle is plugged in, or pass `--remote` / `--no-remote`) reads it and runs the matching
 `tinyctl` command on the **selected** camera — the same one the bar widget
 and keybindings use. It grabs the dongle, so those shortcuts don't also reach
 other apps (Ctrl+Alt+T would otherwise open a terminal on many desktops).

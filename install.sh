@@ -5,14 +5,18 @@
 # user's home — NO sudo required. The udev rule and system config need root and
 # are handled separately by packaging/install-root.sh (run that with sudo).
 #
-# Usage: ./install.sh [--prefix DIR]   (default prefix: ~/.local)
+# Usage: ./install.sh [--prefix DIR] [--remote|--no-remote]   (default prefix: ~/.local)
+#   --remote / --no-remote  enable or disable OBSBOT remote support without asking
 set -euo pipefail
 
 PREFIX="${HOME}/.local"
+REMOTE_CHOICE=""   # yes | no | "" (ask)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix) PREFIX="$2"; shift 2 ;;
-        -h|--help) echo "usage: $0 [--prefix DIR]"; exit 0 ;;
+        --remote) REMOTE_CHOICE=yes; shift ;;
+        --no-remote) REMOTE_CHOICE=no; shift ;;
+        -h|--help) echo "usage: $0 [--prefix DIR] [--remote|--no-remote]"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -109,10 +113,39 @@ echo "==> enabling tiny-guard.service"
 systemctl --user daemon-reload
 systemctl --user enable tiny-guard.service
 systemctl --user restart tiny-guard.service
+# OBSBOT Tiny Smart Remote: ask whether to run tiny-remote. The default is
+# "yes" when the dongle (USB 1106:b106) is plugged in or the service is
+# already enabled, otherwise "no". Without a terminal, the default is used.
 if [[ -f "$UNITDIR/tiny-remote.service" ]]; then
-    echo "==> enabling tiny-remote.service (OBSBOT remote)"
-    systemctl --user enable tiny-remote.service
-    systemctl --user restart tiny-remote.service
+    want="$REMOTE_CHOICE"
+    if [[ -z "$want" ]]; then
+        default=no
+        for d in /sys/bus/usb/devices/*/idVendor; do
+            if [[ "$(cat "$d" 2>/dev/null)" == 1106 && "$(cat "${d%idVendor}idProduct" 2>/dev/null)" == b106 ]]; then
+                default=yes
+            fi
+        done
+        if systemctl --user is-enabled --quiet tiny-remote.service 2>/dev/null; then
+            default=yes
+        fi
+        want="$default"
+        if [[ -t 0 ]]; then
+            if [[ "$default" == yes ]]; then prompt="[Y/n]"; else prompt="[y/N]"; fi
+            read -r -p "Enable OBSBOT Tiny Smart Remote support (tiny-remote)? $prompt " answer || true
+            case "${answer,,}" in
+                y|yes) want=yes ;;
+                n|no) want=no ;;
+            esac
+        fi
+    fi
+    if [[ "$want" == yes ]]; then
+        echo "==> enabling tiny-remote.service (OBSBOT remote)"
+        systemctl --user enable tiny-remote.service
+        systemctl --user restart tiny-remote.service
+    else
+        echo "==> OBSBOT remote support left off (enable later: systemctl --user enable --now tiny-remote.service)"
+        systemctl --user disable --now tiny-remote.service 2>/dev/null || true
+    fi
 fi
 
 echo
