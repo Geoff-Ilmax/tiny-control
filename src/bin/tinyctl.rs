@@ -1114,13 +1114,15 @@ fn cmd_preset(id: &str, dev: &Device, rest: &[String], json: bool) -> Result<()>
                         None => format!("{{\"slot\":{},\"occupied\":false}}", s.slot),
                     })
                     .collect();
+                let copied_from = dev.boot_slot().ok().flatten();
                 let boot_json = match &boot {
                     Ok(b) => format!(
-                        "{{\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\"zoom_ratio\":{:.2},\"slot\":{}}}",
+                        "{{\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\"zoom_ratio\":{:.2},\"slot\":{},\"copied_from\":{}}}",
                         b.pan_deg,
                         b.tilt_deg,
                         b.zoom_ratio,
-                        boot_slot.map_or("null".into(), |s| s.to_string())
+                        boot_slot.map_or("null".into(), |s| s.to_string()),
+                        copied_from.map_or("null".into(), |s| s.to_string())
                     ),
                     Err(_) => "null".into(),
                 };
