@@ -57,7 +57,7 @@ jobs:
 
       - name: Verify the binaries are static
         run: |
-          for b in tinyctl tiny-guard; do
+          for b in tinyctl tiny-guard tiny-remote; do
             path="target/${{ matrix.target }}/release/$b"
             file "$path"
             # A statically linked binary must have no dynamic interpreter.
@@ -75,6 +75,8 @@ jobs:
             staging/${{ matrix.pkgarch }}/tinyctl
           install -Dm755 target/${{ matrix.target }}/release/tiny-guard \
             staging/${{ matrix.pkgarch }}/tiny-guard
+          install -Dm755 target/${{ matrix.target }}/release/tiny-remote \
+            staging/${{ matrix.pkgarch }}/tiny-remote
 
       - uses: actions/upload-artifact@v4
         with:
@@ -116,7 +118,7 @@ jobs:
           path: staging
 
       - name: Restore executable bits
-        run: chmod +x staging/bin-*/tinyctl staging/bin-*/tiny-guard
+        run: chmod +x staging/bin-*/tinyctl staging/bin-*/tiny-guard staging/bin-*/tiny-remote
 
       - name: Install nfpm (checksum-verified)
         run: |
@@ -140,6 +142,7 @@ jobs:
             mkdir -p "$root/bin"
             install -Dm755 "staging/bin-$arch/tinyctl"       "$root/tinyctl"
             install -Dm755 "staging/bin-$arch/tiny-guard" "$root/tiny-guard"
+            install -Dm755 "staging/bin-$arch/tiny-remote" "$root/tiny-remote"
             install -Dm755 bin/tiny-preview                  "$root/bin/tiny-preview"
             install -Dm755 install.sh                      "$root/install.sh"
             cp -r packaging                                "$root/packaging"

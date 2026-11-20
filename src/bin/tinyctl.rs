@@ -62,6 +62,8 @@ GIMBAL
     pan <deg>             Absolute pan  (range depends on the model; see `status`)
     tilt <deg>            Absolute tilt (range depends on the model; see `status`)
     zoom <0..100>         Absolute zoom
+    pan|tilt by <deg>     Relative move from the last commanded angle (clamped)
+    zoom by <steps>       Relative zoom (clamped to 0..100)
     preset list           The camera's 3 preset slots and its power-on position
     preset recall <1|2|3> Move to an on-camera preset (shared with OBSBOT Center)
     preset power-on <1|2|3>  Make that preset (position + Additional settings) the
@@ -324,6 +326,31 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
         "info" => cmd_info(cam, open()?, json),
         "track" => cmd_track(id, open()?, rest),
         "recenter" | "park" | "home" => open()?.recenter(),
+        // `pan|tilt|zoom by <delta>` moves relative to the last commanded
+        // position and clamps at the camera's limits (for remotes / hotkeys).
+        "pan" | "tilt" if rest.first().map(String::as_str) == Some("by") => {
+            let d = need_finite(&rest[1..], "degrees")?;
+            let dev = open()?;
+            let s = dev.status()?;
+            let (cid, cur) = if cmd == "pan" {
+                (controls::CID_PAN_ABSOLUTE, s.pan_deg)
+            } else {
+                (controls::CID_TILT_ABSOLUTE, s.tilt_deg)
+            };
+            let (lo, hi) = dev.gimbal_range_deg(cid);
+            let target = (cur + d).clamp(lo, hi);
+            if cmd == "pan" {
+                dev.set_pan_deg(target)
+            } else {
+                dev.set_tilt_deg(target)
+            }
+        }
+        "zoom" if rest.first().map(String::as_str) == Some("by") => {
+            let d = need_i32(&rest[1..], "zoom steps")?;
+            let dev = open()?;
+            let z = (dev.status()?.zoom + d).clamp(0, 100);
+            dev.set_zoom(z)
+        }
         "pan" => {
             let d = need_finite(rest, "pan degrees")?;
             open()?.set_pan_deg(d)

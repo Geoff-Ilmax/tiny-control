@@ -1,0 +1,14 @@
+[Unit]
+Description=tiny-control: OBSBOT Tiny Smart Remote
+Documentation=https://github.com/Geoff-Ilmax/tiny-control
+# The dongle may be plugged in later; tiny-remote waits for it.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tiny-remote
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

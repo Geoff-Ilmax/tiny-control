@@ -29,6 +29,7 @@ is another good Tiny 2 tool.
 | **White balance** | `wb temp <K>` / `wb auto` | Manual color temperature, quirk-safe |
 | **HDR / FOV / exposure** | `hdr`, `fov`, `exposure` | |
 | **Status** | `status` / `info` | Reads state without waking the camera |
+| **OBSBOT remote** | `tiny-remote` | The Tiny Smart Remote drives the selected camera; buttons 1–4 switch cameras |
 | **Settings guard** | `tiny-guard` | One daemon for all cameras; protects audio-only calls |
 
 ## Supported models
@@ -246,6 +247,32 @@ pactl set-default-source obsbot_calls
 To undo: select the original microphone and run
 `systemctl --user disable --now tiny-audio.service`. Tuning notes are in the
 comments of [`packaging/pipewire/tiny-audio.conf`](packaging/pipewire/tiny-audio.conf).
+
+## OBSBOT Tiny Smart Remote
+
+The remote's USB dongle (`1106:b106`) works without OBSBOT Center. It is a
+plain keyboard that sends a Ctrl+Alt shortcut per button; `tiny-remote` (a
+per-user service enabled by `install.sh`) reads it and runs the matching
+`tinyctl` command on the **selected** camera — the same one the bar widget
+and keybindings use. It grabs the dongle, so those shortcuts don't also reach
+other apps (Ctrl+Alt+T would otherwise open a terminal on many desktops).
+
+| Button | Action |
+|---|---|
+| Power | sleep / wake |
+| Track | AI tracking on / off |
+| Close-up, Hand, Whiteboard, Desk | switch to that mode; press again for tracking off |
+| ▲ ▼ ◀ ▶ (hold to repeat) | pan / tilt — 5° steps, or 1° with the camera's Fine control; honours its Swap left/right and Swap up/down |
+| Center | recenter |
+| Zoom − / + | zoom out / in |
+| P1 P2 P3 | recall that on-camera preset (with its settings) |
+| 1 2 3 4 | select camera 1–4 (order of `tinyctl list`), with a notification |
+
+The udev rule (`sudo ./packaging/install-root.sh`, then replug the dongle)
+gives your login session access to it. Check it with
+`systemctl --user status tiny-remote`; `tiny-remote --dry-run --no-grab` in a
+terminal prints the command each button would run instead of running it.
+Tiny 3 limits still apply (no Close-up there; the remote reports it).
 
 ## Omarchy / Hyprland integration
 

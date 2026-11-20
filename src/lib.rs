@@ -20,6 +20,7 @@ pub mod error;
 pub mod frame;
 pub mod ioctl;
 pub mod model;
+pub mod remote;
 
 pub use device::{Device, Status, TrackMode};
 pub use error::{Error, Result};

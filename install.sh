@@ -29,11 +29,13 @@ if [[ -x "$REPO/tinyctl" && -x "$REPO/tiny-guard" ]]; then
     echo "==> using the prebuilt binaries shipped in this release archive"
     TINYCTL="$REPO/tinyctl"
     WB_GUARD="$REPO/tiny-guard"
+    REMOTE="$REPO/tiny-remote"
 else
     echo "==> building release binaries"
     ( cd "$REPO" && cargo build --release --locked )
     TINYCTL="$REPO/target/release/tinyctl"
     WB_GUARD="$REPO/target/release/tiny-guard"
+    REMOTE="$REPO/target/release/tiny-remote"
 fi
 
 echo "==> installing binaries to $BINDIR"
@@ -41,6 +43,10 @@ install -Dm755 "$TINYCTL" "$BINDIR/tinyctl.new"
 mv -f "$BINDIR/tinyctl.new" "$BINDIR/tinyctl"
 install -Dm755 "$WB_GUARD" "$BINDIR/tiny-guard.new"
 mv -f "$BINDIR/tiny-guard.new" "$BINDIR/tiny-guard"
+if [[ -x "$REMOTE" ]]; then
+    install -Dm755 "$REMOTE" "$BINDIR/tiny-remote.new"
+    mv -f "$BINDIR/tiny-remote.new" "$BINDIR/tiny-remote"
+fi
 install -Dm755 "$REPO/bin/tiny-preview" "$BINDIR/tiny-preview"
 
 # The Omarchy bar widget is intentionally NOT installed here — this installer is
@@ -80,13 +86,37 @@ NoNewPrivileges=true
 WantedBy=default.target
 EOF
 
+# OBSBOT Tiny Smart Remote support. It idles until the dongle is plugged in.
+if [[ -x "$BINDIR/tiny-remote" ]]; then
+    cat > "$UNITDIR/tiny-remote.service" <<EOF
+[Unit]
+Description=tiny-control: OBSBOT Tiny Smart Remote
+Documentation=https://github.com/Geoff-Ilmax/tiny-control
+
+[Service]
+Type=simple
+ExecStart=${BINDIR}/tiny-remote
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+EOF
+fi
+
 echo "==> enabling tiny-guard.service"
 systemctl --user daemon-reload
 systemctl --user enable tiny-guard.service
 systemctl --user restart tiny-guard.service
+if [[ -f "$UNITDIR/tiny-remote.service" ]]; then
+    echo "==> enabling tiny-remote.service (OBSBOT remote)"
+    systemctl --user enable tiny-remote.service
+    systemctl --user restart tiny-remote.service
+fi
 
 echo
-echo "Done. tinyctl and tiny-guard installed to $BINDIR"
+echo "Done. tinyctl, tiny-guard and tiny-remote installed to $BINDIR"
 echo "Next (root, one-time) for the udev rule + cold-plug WB pin:"
 echo "    sudo $REPO/packaging/install-root.sh"
 echo "Make sure $BINDIR is on your PATH."

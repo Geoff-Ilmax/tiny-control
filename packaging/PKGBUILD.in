@@ -44,11 +44,15 @@ package() {
 
     install -Dm755 target/release/tinyctl "$pkgdir/usr/bin/tinyctl"
     install -Dm755 target/release/tiny-guard "$pkgdir/usr/bin/tiny-guard"
+    install -Dm755 target/release/tiny-remote "$pkgdir/usr/bin/tiny-remote"
     install -Dm755 bin/tiny-preview "$pkgdir/usr/bin/tiny-preview"
 
     # Per-user systemd unit (enable with: systemctl --user enable --now tiny-guard)
     install -Dm644 packaging/systemd/tiny-guard.service \
         "$pkgdir/usr/lib/systemd/user/tiny-guard.service"
+    # OBSBOT Tiny Smart Remote (enable with: systemctl --user enable --now tiny-remote)
+    install -Dm644 packaging/systemd/tiny-remote.service \
+        "$pkgdir/usr/lib/systemd/user/tiny-remote.service"
 
     # udev: group access + cold-plug WB pin
     install -Dm644 packaging/udev/71-tiny-control.rules \

@@ -17,6 +17,28 @@ Dead ends are documented too — they save the next person hours.
 
 Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
 
+## OBSBOT Tiny Smart Remote (USB dongle `1106:b106`)
+
+The 2.4 GHz dongle enumerates as "CY.Ltd OBSBOT Remote" with two HID
+interfaces: interface 0 is a keyboard + mouse (`event-kbd`, `event-mouse`),
+interface 1 a vendor page (`0xff05`, 63-byte reports) that stayed silent for
+every button. Every button arrives on the **keyboard** as a Ctrl+Alt chord
+(captured with evtest; each press is a down/up pair, no long-press variant
+seen):
+
+| Button | Key | Button | Key |
+|---|---|---|---|
+| P1 / P2 / P3 | Q / E / R | ▲ ▼ ◀ ▶ | Up / Down / Left / Right |
+| Zoom − / + | H / F | Center | 0 |
+| Track | L | 1 / 2 / 3 / 4 | − / = / , / . |
+| Close-up / Hand | [ / ] | Power | T |
+| Whiteboard / Desk | \ / ; | | |
+
+So OBSBOT Center simply listens for these shortcuts; the remote never talks to
+the camera. `tiny-remote` finds the keyboard node through sysfs (vendor and
+product, plus `EV_REP` to tell it from the mouse node), grabs it with
+`EVIOCGRAB`, and maps the chords to tinyctl commands.
+
 ## Other models and multiple cameras
 
 | Model | USB ID | Product string | Notes |
