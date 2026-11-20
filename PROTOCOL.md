@@ -33,6 +33,30 @@ Model differences handled in code:
 - **Gimbal range.** Pan/tilt limits are read with `VIDIOC_QUERYCTRL` instead of
   assuming the Tiny 3 Lite's ±130°/±90°.
 
+Cross-reference: [brendanwelsh/obsbot-tiny3-protocol](https://github.com/brendanwelsh/obsbot-tiny3-protocol)
+(MIT) measured a Tiny 3 on Windows using the V3 *frame* opcodes. Its findings
+that matter here:
+
+- **Tracking speed** (`AI_SET_TRACK_MODE` `0x0CC4`) is ACKed and ignored on the
+  Tiny 3 — reachable only through OBSBOT Center (OSC). Matches our probe: no
+  status byte follows it, so it is marked unsupported on the Tiny 3.
+- **AI modes were renumbered on the Tiny 3** for `AI_SET_AI_WORK_MODE` `0x0284`
+  (0 single, 1 group, 2 voice, 3 desk, 4 hand, 5 whiteboard), and the
+  framing sub-modes (upper body, close-up, headless, lower body) are Auto Zoom
+  options it could not reach over USB. This project sets AI mode through the
+  selector-6 TLV `0x16` instead, a different path that repo did not test; the
+  Tiny 3 echoes every TLV mode in status bytes `0x18`/`0x1c`, but an echo is
+  not proof of effect — the visible behaviour per mode still needs checking.
+- **FOV**: that repo found no setter. TLV `0x04` works here, confirmed by
+  status byte `0x11` and visually.
+- **Gotchas** it reports for the Tiny 3: UVC zoom can drift back or be
+  overridden while tracking or asleep; a single wake does not always take
+  (this project confirms wake by readback and the guard retries); the gain
+  control's firmware default is near-black; preset *writes* to the camera's
+  own slots are discarded (presets here are stored by tinyctl).
+- It lists the Tiny 3 as `3564:fef8`; on the hardware tested for this project
+  `fef8` is the Tiny 2 and `ff02` the Tiny 3.
+
 Identification with several cameras:
 
 - These cameras publish **no USB iSerial**, so `/dev/v4l/by-id` names carry no

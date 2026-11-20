@@ -294,6 +294,9 @@ PTZ controls are plain V4L2/UVC. No proprietary SDK is required. See
 - **[OpenFoxes/Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux)** (EUPL-1.2)
   — the Tiny 2 control tool; its command frames were the Rosetta stone for the
   V3 protocol, and its notes informed the Tiny 2 status decoding here.
+- **[brendanwelsh/obsbot-tiny3-protocol](https://github.com/brendanwelsh/obsbot-tiny3-protocol)**
+  (MIT) — measured Tiny 3 command behaviour; see the cross-reference in
+  [`PROTOCOL.md`](PROTOCOL.md).
 - **[lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp)** (MIT),
   **[samliddicott/meet4k](https://github.com/samliddicott/meet4k)**,
   **[cgevans/tiny2](https://github.com/cgevans/tiny2)**, and
