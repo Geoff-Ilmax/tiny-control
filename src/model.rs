@@ -156,6 +156,17 @@ const TINY3_LITE_VERIFIED: &[Feature] = &[
     Feature::Hdr,
 ];
 
+/// Features confirmed on the Tiny 3 (ff02) and Tiny 2 (fef8) on real
+/// hardware: sleep, wake, power, status, info, track, pan, tilt, wb, hdr.
+/// (power/status/info are reads and need no feature gate.)
+const TINY3_TINY2_VERIFIED: &[Feature] = &[
+    Feature::Sleep,
+    Feature::Tracking(TrackMode::Off),
+    Feature::Gimbal,
+    Feature::WhiteBalance,
+    Feature::Hdr,
+];
+
 pub static MODELS: &[Model] = &[
     Model {
         id: "tiny3-lite",
@@ -170,7 +181,7 @@ pub static MODELS: &[Model] = &[
         name: "OBSBOT Tiny 3",
         pid: "ff02",
         family: Family::Tiny3,
-        verified: &[],
+        verified: TINY3_TINY2_VERIFIED,
         unsupported: &[],
     },
     Model {
@@ -178,7 +189,7 @@ pub static MODELS: &[Model] = &[
         name: "OBSBOT Tiny 2",
         pid: "fef8",
         family: Family::Tiny2,
-        verified: &[],
+        verified: TINY3_TINY2_VERIFIED,
         unsupported: &[],
     },
 ];
@@ -221,8 +232,23 @@ mod tests {
         );
         assert_eq!(lite.support(Feature::Fov), Support::Expected);
         assert!(lite.is_verified());
-        assert!(!by_pid("fef8").is_verified());
-        assert_eq!(by_pid("fef8").support(Feature::Hdr), Support::Expected);
+        for pid in ["fef8", "ff02"] {
+            let m = by_pid(pid);
+            assert!(m.is_verified(), "{pid}");
+            for f in [
+                Feature::Sleep,
+                Feature::Tracking(TrackMode::UpperBody),
+                Feature::Gimbal,
+                Feature::WhiteBalance,
+                Feature::Hdr,
+            ] {
+                assert_eq!(m.support(f), Support::Verified, "{pid} {f:?}");
+            }
+            // Not part of the hardware test run: still untested.
+            assert_eq!(m.support(Feature::AutoSleepTimer), Support::Expected);
+            assert_eq!(m.support(Feature::Fov), Support::Expected);
+        }
+        assert!(!by_pid("abcd").is_verified());
     }
 
     #[test]

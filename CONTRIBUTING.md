@@ -6,8 +6,9 @@ real hardware** — especially the Tiny 2 and Tiny 3, and multi-camera setups.
 ## Model owners: please test
 
 The protocol is verified upstream on an **OBSBOT Tiny 3 Lite** (`3564:ff04`).
-The Tiny 3 (`ff02`) and Tiny 2 (`fef8`) are detected and expected to work, but
-each feature is marked untested on them until someone confirms it
+The Tiny 3 (`ff02`) and Tiny 2 (`fef8`) are verified for sleep/wake, status,
+tracking, pan/tilt, white balance and HDR; zoom, FOV, exposure, face-AE,
+tracking speed and the auto-sleep timer are still untested on them
 ([`src/model.rs`](src/model.rs)). If you own one, please help:
 
 1. **List your cameras** (reads sysfs only; opens nothing except a one-time,

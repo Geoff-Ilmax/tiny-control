@@ -22,8 +22,8 @@ Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
 | Model | USB ID | Product string | Notes |
 |---|---|---|---|
 | Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
-| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout (index0 capture, index1 metadata); XU assumed identical, unconfirmed |
-| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; see Tiny4Linux |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; sleep/wake, tracking, pan/tilt, WB, HDR verified |
+| Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; sleep/wake, tracking, pan/tilt, WB, HDR verified |
 
 Model differences handled in code:
 

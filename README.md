@@ -38,9 +38,13 @@ All share one control protocol; only the USB product ID differs.
 | Model | USB ID | Status |
 |---|---|---|
 | OBSBOT Tiny 3 Lite | `3564:ff04` | ✅ **Verified** upstream on real hardware (firmware 0510) |
-| OBSBOT Tiny 3 | `3564:ff02` | 🧪 Detected; awaiting hardware confirmation |
-| OBSBOT Tiny 2 | `3564:fef8` | 🧪 Detected; awaiting hardware confirmation |
+| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: sleep/wake, power, status, info, tracking, pan/tilt, WB, HDR |
+| OBSBOT Tiny 2 | `3564:fef8` | ✅ **Verified**: sleep/wake, power, status, info, tracking, pan/tilt, WB, HDR |
 | Other OBSBOT (`3564:*`) | | ⚠️ Detected as "unrecognized model", every feature treated as untested |
+
+Verified on a Tiny 2 and a Tiny 3 running together. Zoom, FOV, exposure,
+face-AE, tracking speed and the firmware auto-sleep timer are not yet
+confirmed on those two models.
 
 **Untested means loud, not silent.** Each feature has a support level per
 model ([`src/model.rs`](src/model.rs)): features known to be missing are
