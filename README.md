@@ -25,7 +25,7 @@ is another good Tiny 2 tool.
 | **Multi-camera** | `tinyctl list`, `-c <camera>`, `-c all` | Serial-based identity, aliases, per-camera settings |
 | **Sleep / wake** | `sleep` / `wake` / `toggle` | Real vendor sleep: LED off, gimbal parks |
 | **AI tracking** | `track on\|off\|<mode>` | normal, group, hand, whiteboard, desk; upper/lower body, close-up, headless on the Tiny 2 only |
-| **Gimbal** | `pan/tilt/zoom`, `recenter` | Absolute PTZ (range queried per model) + per-camera presets |
+| **Gimbal** | `pan/tilt/zoom`, `recenter` | Absolute PTZ (range queried per model) + the camera's own presets 1–3 and power-on position |
 | **White balance** | `wb temp <K>` / `wb auto` | Manual color temperature, quirk-safe |
 | **HDR / FOV / exposure** | `hdr`, `fov`, `exposure` | |
 | **Status** | `status` / `info` | Reads state without waking the camera |
@@ -162,8 +162,10 @@ tinyctl -c desk pan 20               # absolute pan, degrees (range shown by `st
 tinyctl -c desk tilt -10
 tinyctl -c desk zoom 60              # 0..100
 tinyctl -c desk recenter
-tinyctl -c desk preset save talk     # presets are per camera
-tinyctl -c desk preset recall talk
+tinyctl -c desk preset list          # the camera's own slots 1-3 + power-on position
+tinyctl -c desk preset recall 2      # same slots OBSBOT Center uses
+tinyctl -c desk preset save 2        # store the current position in slot 2
+tinyctl -c desk preset power-on 2    # power on at preset 2 (preset power-on off to reset)
 
 tinyctl -c desk wb temp 4000         # manual white balance, 4000K
 tinyctl -c desk wb auto
@@ -274,6 +276,10 @@ Documented in full in [`PROTOCOL.md`](PROTOCOL.md) and encoded in the code:
    pan/tilt controls (not the vendor frame) to keep readback honest. After AI
    tracking moves the gimbal, `status` and `preset save` still show the last
    host-commanded angle; save presets from a position set with `pan/tilt`.
+5. **Presets live in the camera.** `preset` uses the camera's three slots, so
+   presets made in OBSBOT Center work here and the other way round. The
+   power-on position is a separate pose stored in the camera; `preset power-on
+   N` copies slot N's pose into it (changing slot N later does not move it).
 4. **No USB serial string.** These cameras publish no iSerial, so two identical
    models get the same `/dev/v4l/by-id` name. Cameras are found via sysfs and
    identified by the vendor serial instead.

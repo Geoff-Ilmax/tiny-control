@@ -16,7 +16,8 @@
 //!
 //! Lives at `$XDG_CONFIG_HOME/tiny-control/config` (default
 //! `~/.config/tiny-control/config`), falling back to `/etc/tiny-control/config`.
-//! Gimbal presets live alongside it as `presets/<ID>/<name>`.
+//! Gimbal presets are not stored here: they live in the camera's own three
+//! preset slots (see `Device::presets`).
 
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -335,69 +336,12 @@ pub fn set_selected(id: &str) -> Result<()> {
     Ok(())
 }
 
-// --- gimbal presets (pan/tilt/zoom triples stored by name, per camera) ---
-
-#[derive(Debug, Clone, Copy)]
-pub struct Preset {
-    pub pan_deg: f64,
-    pub tilt_deg: f64,
-    pub zoom: i32,
-}
-
-fn presets_dir(id: &str) -> PathBuf {
-    config_dir().join("presets").join(id)
-}
-
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-pub fn save_preset(id: &str, name: &str, p: Preset) -> Result<()> {
-    if !valid_name(name) {
-        return Err(Error::Usage(format!(
-            "invalid preset name '{name}' (use letters, digits, - and _)"
-        )));
-    }
-    let dir = presets_dir(id);
-    std::fs::create_dir_all(&dir)?;
-    let body = format!(
-        "pan_deg = {}\ntilt_deg = {}\nzoom = {}\n",
-        p.pan_deg, p.tilt_deg, p.zoom
-    );
-    std::fs::write(dir.join(name), body)?;
-    Ok(())
-}
-
-pub fn load_preset(id: &str, name: &str) -> Result<Preset> {
-    if !valid_name(name) {
-        return Err(Error::Usage(format!("invalid preset name '{name}'")));
-    }
-    let text = std::fs::read_to_string(presets_dir(id).join(name))
-        .map_err(|_| Error::Config(format!("no preset named '{name}' for this camera")))?;
-    let m = ConfigFile::parse(&text).global;
-    Ok(Preset {
-        pan_deg: m.get("pan_deg").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        tilt_deg: m
-            .get("tilt_deg")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0),
-        zoom: m.get("zoom").and_then(|s| s.parse().ok()).unwrap_or(0),
-    })
-}
-
-pub fn list_presets(id: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(presets_dir(id)) {
-        for e in entries.flatten() {
-            names.push(e.file_name().to_string_lossy().to_string());
-        }
-    }
-    names.sort();
-    names
 }
 
 /// Serialize cooperating CLI/guard operations, including config read-modify-write.

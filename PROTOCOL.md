@@ -62,6 +62,31 @@ that matter here:
 - It lists the Tiny 3 as `3564:fef8`; on the hardware tested for this project
   `fef8` is the Tiny 2 and `ff02` the Tiny 3.
 
+### On-camera presets and power-on position
+
+Decoded by [lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp) (MIT) on the
+Tiny 2; implemented here in `Device::presets` and friends, **not yet
+hardware-confirmed by this project**. The Tiny 3 reportedly discards preset
+*writes* (brendanwelsh/obsbot-tiny3-protocol) but recalls Center-made ones.
+
+- **Read**: flat XU selector `0x0C` returns `[count, slot idx…]`; echo those
+  exact bytes back with SET_CUR to reset the cursor, then GET selector `0x0D`
+  `count` times. Entry: status u8 (`0` valid, `2` end, `3` empty store), slot
+  idx u8 (0-based), pad u16, pitch i16 and yaw i16 (1/100°), zoom u16 (1/100
+  ratio), NUL-terminated base64 name.
+- **Write** (framed V3, receiver `0x04`): ADD `0x3944` / UPDATE `0x3E04` =
+  `idx u32` + pan, tilt, roll, zoom f32 + `-1000.0` sentinel; RECALL `0x39C4`
+  = `idx u32` + four `1.0` f32; DELETE `0x3984` = `idx u32`.
+- **Recall on Linux** leaves uvcvideo's cached pan/tilt stale; tinyctl also
+  writes the slot's pan/tilt through UVC.
+- **Power-on position**: `AI_SET_GIM_BOOT_POS` `0x3844` = six f32
+  `[0, yaw, pitch, roll, zoom, 0]` (exactly 24 bytes — 20 is silently
+  discarded); `AI_GET_GIM_BOOT_POS` `0x3884` (header-only GET) reads it back;
+  `AI_RST_GIM_BOOT_POS` `0x38C4` restores the factory pose. lxman confirmed it
+  by write → physical replug. It is one pose, not a link to a slot.
+- Replies: flags `0x09` is an ACK with no payload (stale bytes follow), `0x89`
+  an error with the code at bytes 14–15; both are handled by `frame::parse`.
+
 Identification with several cameras:
 
 - These cameras publish **no USB iSerial**, so `/dev/v4l/by-id` names carry no

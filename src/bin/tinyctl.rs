@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 use tiny_control::camera::{self, Cam};
-use tiny_control::config::{self, Preset};
+use tiny_control::config;
 use tiny_control::model::{self, Feature};
 use tiny_control::{controls, discover, Device, Error, Result, TrackMode};
 
@@ -59,9 +59,12 @@ GIMBAL
     pan <deg>             Absolute pan  (range depends on the model; see `status`)
     tilt <deg>            Absolute tilt (range depends on the model; see `status`)
     zoom <0..100>         Absolute zoom
-    preset save <name>    Save current pan/tilt/zoom as a named preset (per camera)
-    preset recall <name>  Move to a saved preset
-    preset list           List this camera's saved presets
+    preset list           The camera's 3 preset slots and its power-on position
+    preset recall <1|2|3> Move to an on-camera preset (shared with OBSBOT Center)
+    preset save <1|2|3>   Store the current position in that camera slot
+    preset delete <1|2|3> Empty that camera slot
+    preset power-on <1|2|3>  Make that preset the camera's power-on position
+    preset power-on off   Restore the factory power-on position
 
 IMAGE
     wb auto               Auto white balance (safe fallback)
@@ -326,7 +329,7 @@ fn run_one(cam: &Cam, cmd: &str, rest: &[String], json: bool) -> Result<()> {
             let z = need_i32(rest, "zoom 0..100")?;
             open()?.set_zoom(z)
         }
-        "preset" => cmd_preset(id, open()?, rest),
+        "preset" => cmd_preset(open()?, rest, json),
         "wb" => cmd_wb(id, open()?, rest),
         "hdr" => {
             let on = need_on_off(rest, "hdr")?;
@@ -813,51 +816,140 @@ fn cmd_track(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
     config::save_setting(id, "tracking", mode.label())
 }
 
-fn cmd_preset(id: &str, dev: &Device, rest: &[String]) -> Result<()> {
+fn pose_str(p: &tiny_control::device::Pose) -> String {
+    format!(
+        "pan {:.1}°, tilt {:.1}°, zoom {:.2}x",
+        p.pan_deg, p.tilt_deg, p.zoom_ratio
+    )
+}
+
+fn need_slot(rest: &[String], usage: &str) -> Result<u8> {
+    match rest.get(1).map(String::as_str) {
+        Some(s @ ("1" | "2" | "3")) => Ok(s.parse().unwrap()),
+        Some(other) => Err(Error::Usage(format!(
+            "presets are the camera's slots 1, 2 and 3 (got '{other}'); {usage}"
+        ))),
+        None => Err(Error::Usage(usage.into())),
+    }
+}
+
+/// Presets are the camera's own three slots — the same ones OBSBOT Center
+/// manages — so they follow the camera between computers.
+fn cmd_preset(dev: &Device, rest: &[String], json: bool) -> Result<()> {
     match rest.first().map(String::as_str) {
-        Some("list") => {
-            let names = config::list_presets(id);
-            if names.is_empty() {
-                println!("(no presets saved for this camera)");
-            } else {
-                for n in names {
-                    println!("{n}");
+        Some("list") | None => {
+            let slots = dev.presets()?;
+            let boot = dev.boot_pose();
+            let boot_slot = boot.as_ref().ok().and_then(|b| {
+                slots
+                    .iter()
+                    .find(|s| s.pose.is_some_and(|p| p.close_to(b)))
+                    .map(|s| s.slot)
+            });
+            if json {
+                let items: Vec<String> = slots
+                    .iter()
+                    .map(|s| match s.pose {
+                        Some(p) => format!(
+                            "{{\"slot\":{},\"occupied\":true,\"name\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\"zoom_ratio\":{:.2},\"power_on\":{}}}",
+                            s.slot,
+                            json_opt(s.name.as_deref()),
+                            p.pan_deg,
+                            p.tilt_deg,
+                            p.zoom_ratio,
+                            boot_slot == Some(s.slot)
+                        ),
+                        None => format!("{{\"slot\":{},\"occupied\":false}}", s.slot),
+                    })
+                    .collect();
+                let boot_json = match &boot {
+                    Ok(b) => format!(
+                        "{{\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\"zoom_ratio\":{:.2},\"slot\":{}}}",
+                        b.pan_deg,
+                        b.tilt_deg,
+                        b.zoom_ratio,
+                        boot_slot.map_or("null".into(), |s| s.to_string())
+                    ),
+                    Err(_) => "null".into(),
+                };
+                println!(
+                    "{{\"presets\":[{}],\"power_on\":{boot_json}}}",
+                    items.join(",")
+                );
+                return Ok(());
+            }
+            for s in &slots {
+                match s.pose {
+                    Some(p) => println!(
+                        "  {}  {}{}{}",
+                        s.slot,
+                        pose_str(&p),
+                        s.name
+                            .as_deref()
+                            .map(|n| format!("  \"{n}\""))
+                            .unwrap_or_default(),
+                        if boot_slot == Some(s.slot) {
+                            "  [power-on]"
+                        } else {
+                            ""
+                        }
+                    ),
+                    None => println!("  {}  (empty)", s.slot),
                 }
+            }
+            match boot {
+                Ok(b) => println!(
+                    "power-on: {}",
+                    match boot_slot {
+                        Some(n) => format!("preset {n} ({})", pose_str(&b)),
+                        None => format!("{} (not one of the presets)", pose_str(&b)),
+                    }
+                ),
+                Err(e) => println!("power-on: unknown ({e})"),
             }
             Ok(())
         }
+        Some("recall") | Some("load") | Some("goto") => {
+            let slot = need_slot(rest, "preset recall <1|2|3>")?;
+            let p = dev.preset_recall(slot)?;
+            println!("recalled preset {slot} ({})", pose_str(&p));
+            Ok(())
+        }
         Some("save") => {
-            let name = rest
-                .get(1)
-                .ok_or_else(|| Error::Usage("preset save <name>".into()))?;
-            let s = dev.status()?;
-            config::save_preset(
-                id,
-                name,
-                Preset {
-                    pan_deg: s.pan_deg,
-                    tilt_deg: s.tilt_deg,
-                    zoom: s.zoom,
-                },
-            )?;
-            println!(
-                "saved preset '{name}' (pan {:.1}°, tilt {:.1}°, zoom {})",
-                s.pan_deg, s.tilt_deg, s.zoom
-            );
+            let slot = need_slot(rest, "preset save <1|2|3>")?;
+            let p = dev.preset_save(slot)?;
+            println!("saved preset {slot} on the camera ({})", pose_str(&p));
             Ok(())
         }
-        Some("recall") | Some("load") => {
-            let name = rest
-                .get(1)
-                .ok_or_else(|| Error::Usage("preset recall <name>".into()))?;
-            let p = config::load_preset(id, name)?;
-            dev.set_zoom(p.zoom)?;
-            dev.set_pan_deg(p.pan_deg)?;
-            dev.set_tilt_deg(p.tilt_deg)?;
-            println!("recalled preset '{name}'");
+        Some("delete") | Some("clear") => {
+            let slot = need_slot(rest, "preset delete <1|2|3>")?;
+            dev.preset_delete(slot)?;
+            println!("preset {slot} is now empty");
             Ok(())
         }
-        _ => Err(Error::Usage("preset save|recall|list".into())),
+        Some("power-on") | Some("boot") => match rest.get(1).map(String::as_str) {
+            None => cmd_preset(dev, &["list".into()], json),
+            Some("off") | Some("reset") | Some("default") => {
+                dev.reset_boot_pose()?;
+                println!("power-on position reset to the factory default");
+                Ok(())
+            }
+            Some(_) => {
+                let slot = need_slot(rest, "preset power-on <1|2|3>|off")?;
+                let pose = dev.presets()?[slot as usize - 1].pose.ok_or_else(|| {
+                    Error::Config(format!("preset {slot} is empty; save it first"))
+                })?;
+                dev.set_boot_pose(&pose)?;
+                println!(
+                    "the camera will power on at preset {slot} ({})",
+                    pose_str(&pose)
+                );
+                Ok(())
+            }
+        },
+        _ => Err(Error::Usage(
+            "preset list | recall|save|delete <1|2|3> | power-on <1|2|3>|off".into(),
+        )),
     }
 }
 

@@ -31,6 +31,21 @@ const CMD_GIMBAL_MOVE: u16 = 0x6444; // move-to-angle, 3x f32 motor degrees
 const CMD_TRACK_SPEED: u16 = 0x0CC4; // payload [0]=standard [2]=sport
 const CMD_GET_SN: u16 = 0x18C8;
 const CMD_GET_UUID: u16 = 0x1808;
+// On-camera presets and boot pose (AI receiver). Decoded by lxman/obsbot-mcp
+// on the Tiny 2; see PROTOCOL.md "On-camera presets".
+const CMD_PRESET_ADD: u16 = 0x3944;
+const CMD_PRESET_DELETE: u16 = 0x3984;
+const CMD_PRESET_TRIG: u16 = 0x39C4;
+const CMD_PRESET_UPDATE: u16 = 0x3E04;
+const CMD_BOOT_POS_SET: u16 = 0x3844;
+const CMD_BOOT_POS_GET: u16 = 0x3884;
+const CMD_BOOT_POS_RST: u16 = 0x38C4;
+// Flat (non-framed) XU selectors that expose the preset store.
+const SEL_PRESET_LIST: u8 = 0x0C;
+const SEL_PRESET_ENTRY: u8 = 0x0D;
+
+/// Number of on-camera preset slots (shown to users as 1..=3).
+pub const PRESET_SLOTS: u8 = 3;
 
 // Raw-TLV tags on selector 6.
 const TLV_HDR: u8 = 0x01;
@@ -158,6 +173,106 @@ pub struct Status {
     pub raw: [u8; 60],
 }
 
+/// A gimbal pose as the camera stores it in a preset or its boot pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub pan_deg: f64,
+    pub tilt_deg: f64,
+    /// Zoom ratio: 1.0 = no zoom (UVC zoom 0), 2.0 = UVC zoom 100.
+    pub zoom_ratio: f64,
+}
+
+impl Pose {
+    /// Same place, within the camera's ~1° storage quantization.
+    pub fn close_to(&self, o: &Pose) -> bool {
+        (self.pan_deg - o.pan_deg).abs() <= 1.5 && (self.tilt_deg - o.tilt_deg).abs() <= 1.5
+    }
+}
+
+/// One on-camera preset slot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetSlot {
+    /// 1..=3
+    pub slot: u8,
+    /// None when the slot is empty.
+    pub pose: Option<Pose>,
+    pub name: Option<String>,
+}
+
+/// Decode a flat selector-13 preset entry. Layout (60 bytes): status u8
+/// (0 = valid entry), slot index u8 (0-based), pad u16, pitch i16 and yaw i16
+/// in hundredths of a degree, zoom u16 in hundredths of a ratio, then a
+/// NUL-terminated base64 name.
+fn decode_preset_entry(b: &[u8; 60]) -> Option<(u8, Pose, Option<String>)> {
+    // An all-zero header is what a failed read looks like; a real preset
+    // always has zoom >= 1.0, so never mistake it for an occupied slot.
+    if b[0] != 0 || b[..10].iter().all(|&x| x == 0) || b[1] > PRESET_SLOTS - 1 {
+        return None;
+    }
+    let i16_at = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]) as f64 / 100.0;
+    let pose = Pose {
+        tilt_deg: i16_at(4),
+        pan_deg: i16_at(6),
+        zoom_ratio: u16::from_le_bytes([b[8], b[9]]) as f64 / 100.0,
+    };
+    let end = b[10..].iter().position(|&x| x == 0).map_or(60, |p| 10 + p);
+    let name = base64_decode(&b[10..end])
+        .map(|v| String::from_utf8_lossy(&v).trim().to_string())
+        .filter(|n| !n.is_empty());
+    Some((b[1] + 1, pose, name))
+}
+
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0);
+    for &c in input.iter().filter(|&&c| c != b'=') {
+        acc = (acc << 6) | val(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+fn pose_payload(prefix: u32, p: &Pose, trailer: f32) -> Vec<u8> {
+    let mut v = prefix.to_le_bytes().to_vec();
+    for f in [
+        p.pan_deg as f32,
+        p.tilt_deg as f32,
+        0.0,
+        p.zoom_ratio as f32,
+        trailer,
+    ] {
+        v.extend_from_slice(&f.to_le_bytes());
+    }
+    v
+}
+
+fn check_slot(slot: u8) -> Result<u32> {
+    if !(1..=PRESET_SLOTS).contains(&slot) {
+        return Err(Error::OutOfRange {
+            what: "preset slot",
+            min: 1,
+            max: PRESET_SLOTS as i64,
+            got: slot as i64,
+        });
+    }
+    Ok(slot as u32 - 1)
+}
+
 /// An open camera (control fd; reads do not wake a sleeping camera).
 pub struct Device {
     fd: VideoFd,
@@ -241,6 +356,12 @@ impl Device {
                 // swaps sender/receiver, so sender is no longer the host. This
                 // rejects an echoed request frame sitting in the mailbox.
                 if r.seq == seq && r.cmd == cmd && r.sender != frame::SENDER_HOST {
+                    if let Some(code) = r.error {
+                        return Err(Error::Config(format!(
+                            "the {} rejected the {what} request (firmware error {code:#06x})",
+                            self.model.name
+                        )));
+                    }
                     return Ok(r);
                 }
             }
@@ -322,6 +443,185 @@ impl Device {
     pub fn uuid_hex(&self) -> Result<String> {
         let r = self.transact_get(RCV_UPGRADE, CMD_GET_UUID, "uuid")?;
         Ok(r.payload.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    // --- on-camera presets (slots 1..=3) and boot pose ---
+
+    /// Read all three on-camera preset slots (the ones OBSBOT Center shows).
+    /// Flat selector 12 lists occupied slots; echoing it back resets the
+    /// selector-13 cursor, which then yields one entry per read.
+    pub fn presets(&self) -> Result<Vec<PresetSlot>> {
+        self.model.require(Feature::PresetRecall)?;
+        let list = self.fd.xu_get(XU_UNIT, SEL_PRESET_LIST)?;
+        let count = list[0];
+        // A dead/asleep read returns all zeros; a genuine empty store does not.
+        if count > PRESET_SLOTS || list.iter().all(|&b| b == 0) {
+            return Err(Error::NoReply("on-camera preset list"));
+        }
+        // Echo exactly what the camera returned — the only write to selector
+        // 12 known to be safe.
+        self.fd.xu_set(XU_UNIT, SEL_PRESET_LIST, &list)?;
+        let mut slots: Vec<PresetSlot> = (1..=PRESET_SLOTS)
+            .map(|slot| PresetSlot {
+                slot,
+                pose: None,
+                name: None,
+            })
+            .collect();
+        for _ in 0..count {
+            let entry = self.fd.xu_get(XU_UNIT, SEL_PRESET_ENTRY)?;
+            match decode_preset_entry(&entry) {
+                Some((slot, pose, name)) => {
+                    let s = &mut slots[slot as usize - 1];
+                    s.pose = Some(pose);
+                    s.name = name;
+                }
+                None => break,
+            }
+        }
+        Ok(slots)
+    }
+
+    fn preset(&self, slot: u8) -> Result<PresetSlot> {
+        check_slot(slot)?;
+        Ok(self.presets()?.swap_remove(slot as usize - 1))
+    }
+
+    /// The gimbal's current pose: pan/tilt from the UVC controls, zoom mapped
+    /// from UVC zoom (min..max) onto the camera's 1.0..2.0 ratio.
+    pub fn current_pose(&self) -> Result<Pose> {
+        let pan = self.fd.get_ctrl(controls::CID_PAN_ABSOLUTE)?;
+        let tilt = self.fd.get_ctrl(controls::CID_TILT_ABSOLUTE)?;
+        let zoom = self.fd.get_ctrl(controls::CID_ZOOM_ABSOLUTE)?;
+        let (zmin, zmax) = match self.fd.query_ctrl(controls::CID_ZOOM_ABSOLUTE) {
+            Ok(r) if r.max > r.min => (r.min, r.max),
+            _ => (0, 100),
+        };
+        Ok(Pose {
+            pan_deg: pan as f64 / controls::ASEC_PER_DEG,
+            tilt_deg: tilt as f64 / controls::ASEC_PER_DEG,
+            zoom_ratio: 1.0 + (zoom - zmin) as f64 / (zmax - zmin) as f64,
+        })
+    }
+
+    /// Move to on-camera preset `slot`. The vendor recall moves the gimbal
+    /// but leaves uvcvideo's cached pan/tilt readback stale, so the slot's
+    /// pan/tilt is also written through UVC (same target, keeps `status`
+    /// honest).
+    pub fn preset_recall(&self, slot: u8) -> Result<Pose> {
+        let idx = check_slot(slot)?;
+        // A sleeping camera acknowledges moves and ignores them.
+        if self.fd.xu_get(XU_UNIT, SEL_STATUS)?[ST_SLEEP] != 0 {
+            return Err(Error::Config(
+                "the camera is asleep; wake it before recalling a preset".into(),
+            ));
+        }
+        let p = self.preset(slot)?;
+        let pose = p.pose.ok_or_else(|| {
+            Error::Config(format!(
+                "preset {slot} is empty on this camera (save it with `preset save {slot}`)"
+            ))
+        })?;
+        let mut payload = idx.to_le_bytes().to_vec();
+        for _ in 0..4 {
+            payload.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        self.send_set(RCV_AI, CMD_PRESET_TRIG, &payload)?;
+        let clamp = |cid, deg: f64| {
+            let (lo, hi) = self.gimbal_range_deg(cid);
+            ((deg.clamp(lo, hi)) * controls::ASEC_PER_DEG).round() as i32
+        };
+        self.fd.set_ctrl(
+            controls::CID_PAN_ABSOLUTE,
+            clamp(controls::CID_PAN_ABSOLUTE, pose.pan_deg),
+        )?;
+        self.fd.set_ctrl(
+            controls::CID_TILT_ABSOLUTE,
+            clamp(controls::CID_TILT_ABSOLUTE, pose.tilt_deg),
+        )?;
+        Ok(pose)
+    }
+
+    /// Store the current pose in on-camera slot `slot` (create or overwrite),
+    /// then read the slot back to confirm the camera kept it.
+    pub fn preset_save(&self, slot: u8) -> Result<Pose> {
+        self.model.require(Feature::PresetSave)?;
+        let idx = check_slot(slot)?;
+        let occupied = self.preset(slot)?.pose.is_some();
+        let pose = self.current_pose()?;
+        let cmd = if occupied {
+            CMD_PRESET_UPDATE
+        } else {
+            CMD_PRESET_ADD
+        };
+        // Trailing -1000.0 is the sentinel ADD/UPDATE require.
+        self.send_set(RCV_AI, cmd, &pose_payload(idx, &pose, -1000.0))?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self
+                .preset(slot)?
+                .pose
+                .is_some_and(|stored| stored.close_to(&pose))
+            {
+                return Ok(pose);
+            }
+        }
+        Err(self.model.unconfirmed(Feature::PresetSave))
+    }
+
+    /// Empty on-camera slot `slot`.
+    pub fn preset_delete(&self, slot: u8) -> Result<()> {
+        self.model.require(Feature::PresetSave)?;
+        let idx = check_slot(slot)?;
+        if self.preset(slot)?.pose.is_none() {
+            return Ok(());
+        }
+        self.send_set(RCV_AI, CMD_PRESET_DELETE, &idx.to_le_bytes())?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self.preset(slot)?.pose.is_none() {
+                return Ok(());
+            }
+        }
+        Err(self.model.unconfirmed(Feature::PresetSave))
+    }
+
+    /// The pose the camera moves to when it powers on.
+    pub fn boot_pose(&self) -> Result<Pose> {
+        self.model.require(Feature::PowerOnPose)?;
+        let r = self.transact_get(RCV_AI, CMD_BOOT_POS_GET, "power-on position")?;
+        // Six f32 LE: [0, yaw, pitch, roll, zoom, 0].
+        if r.payload.len() < 20 {
+            return Err(Error::NoReply("power-on position"));
+        }
+        let f =
+            |i: usize| f32::from_le_bytes(r.payload[i * 4..i * 4 + 4].try_into().unwrap()) as f64;
+        Ok(Pose {
+            pan_deg: f(1),
+            tilt_deg: f(2),
+            zoom_ratio: f(4),
+        })
+    }
+
+    /// Store `pose` as the power-on position and confirm by readback. The
+    /// camera keeps a single boot pose (not a link to a slot); the payload
+    /// must be exactly 24 bytes or the firmware silently discards it.
+    pub fn set_boot_pose(&self, pose: &Pose) -> Result<()> {
+        self.model.require(Feature::PowerOnPose)?;
+        self.send_set(RCV_AI, CMD_BOOT_POS_SET, &pose_payload(0, pose, 0.0))?;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(200));
+            if self.boot_pose()?.close_to(pose) {
+                return Ok(());
+            }
+        }
+        Err(self.model.unconfirmed(Feature::PowerOnPose))
+    }
+
+    /// Restore the factory power-on position.
+    pub fn reset_boot_pose(&self) -> Result<()> {
+        self.model.require(Feature::PowerOnPose)?;
+        self.send_set(RCV_AI, CMD_BOOT_POS_RST, &[])
     }
 
     // --- AI tracking ---
@@ -557,6 +857,51 @@ fn decode_auto_sleep(status: &[u8; 60]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_entry_decodes() {
+        let mut b = [0u8; 60];
+        b[1] = 1; // slot 2
+        b[4..6].copy_from_slice(&(-1500i16).to_le_bytes()); // tilt -15.00
+        b[6..8].copy_from_slice(&(2025i16).to_le_bytes()); // pan 20.25
+        b[8..10].copy_from_slice(&150u16.to_le_bytes()); // zoom 1.5
+        b[10..18].copy_from_slice(b"RGVzaw=="); // "Desk"
+        let (slot, pose, name) = decode_preset_entry(&b).unwrap();
+        assert_eq!(slot, 2);
+        assert_eq!(
+            (pose.pan_deg, pose.tilt_deg, pose.zoom_ratio),
+            (20.25, -15.0, 1.5)
+        );
+        assert_eq!(name.as_deref(), Some("Desk"));
+        // End-of-list markers and failed (all-zero) reads are not presets.
+        b[0] = 0x02;
+        assert!(decode_preset_entry(&b).is_none());
+        assert!(decode_preset_entry(&[0u8; 60]).is_none());
+        let mut bad = [0u8; 60];
+        bad[1] = 5;
+        bad[8] = 100;
+        assert!(decode_preset_entry(&bad).is_none());
+    }
+
+    #[test]
+    fn pose_payloads_have_the_widths_the_firmware_requires() {
+        let p = Pose {
+            pan_deg: -35.0,
+            tilt_deg: -20.0,
+            zoom_ratio: 1.0,
+        };
+        // Boot pose: [0, yaw, pitch, roll, zoom, 0] = 24 bytes.
+        let boot = pose_payload(0, &p, 0.0);
+        assert_eq!(boot.len(), 24);
+        assert_eq!(&boot[4..8], &(-35.0f32).to_le_bytes());
+        assert_eq!(&boot[20..24], &0.0f32.to_le_bytes());
+        // ADD/UPDATE: slot index then the same pose with a -1000 sentinel.
+        let add = pose_payload(2, &p, -1000.0);
+        assert_eq!(&add[0..4], &2u32.to_le_bytes());
+        assert_eq!(&add[20..24], &(-1000.0f32).to_le_bytes());
+        assert!(check_slot(0).is_err() && check_slot(4).is_err());
+        assert_eq!(check_slot(3).unwrap(), 2);
+    }
 
     #[test]
     fn tiny2_hand_tracking_readback_decodes() {

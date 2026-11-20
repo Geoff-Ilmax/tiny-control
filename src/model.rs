@@ -41,6 +41,12 @@ pub enum Feature {
     Fov,
     Exposure,
     FaceAe,
+    /// Reading and recalling the on-camera preset slots.
+    PresetRecall,
+    /// Writing (saving/deleting) the on-camera preset slots.
+    PresetSave,
+    /// The camera's stored power-on (boot) gimbal position.
+    PowerOnPose,
 }
 
 impl Feature {
@@ -58,6 +64,9 @@ impl Feature {
             Feature::Fov => "field of view".into(),
             Feature::Exposure => "exposure".into(),
             Feature::FaceAe => "face auto-exposure".into(),
+            Feature::PresetRecall => "on-camera preset recall".into(),
+            Feature::PresetSave => "saving on-camera presets".into(),
+            Feature::PowerOnPose => "power-on position".into(),
         }
     }
 
@@ -110,6 +119,9 @@ pub fn feature_table() -> Vec<(Feature, &'static str)> {
         (Feature::Fov, "fov"),
         (Feature::Exposure, "exposure"),
         (Feature::FaceAe, "face-ae"),
+        (Feature::PresetRecall, "preset list / recall"),
+        (Feature::PresetSave, "preset save / delete"),
+        (Feature::PowerOnPose, "preset power-on"),
     ]);
     v
 }
@@ -364,7 +376,14 @@ mod tests {
                 .filter(|(_, s)| *s != Support::Verified)
                 .collect()
         };
-        assert_eq!(not_verified("fef8"), []);
+        // On-camera presets and the power-on position are new and untested.
+        let presets = [
+            ("on-camera preset recall", Support::Expected),
+            ("saving on-camera presets", Support::Expected),
+            ("power-on position", Support::Expected),
+        ]
+        .map(|(f, s)| (f.to_string(), s));
+        assert_eq!(not_verified("fef8"), presets);
         assert_eq!(
             not_verified("ff02"),
             [
@@ -375,6 +394,9 @@ mod tests {
                 "tracking speed"
             ]
             .map(|f| (f.to_string(), Support::Unsupported))
+            .into_iter()
+            .chain(presets.clone())
+            .collect::<Vec<_>>()
         );
         let t3 = by_pid("ff02");
         for m in [
