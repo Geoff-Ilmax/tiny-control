@@ -33,6 +33,7 @@ CAMERAS
     selected              Print the selected camera's id
     alias <CAMERA> <name> Name a camera (letters, digits, - and _)
     alias <CAMERA> --clear
+    notify [on|off]       Desktop notifications from tiny-remote (off by default)
 
 POWER
     sleep                 Put the camera to sleep (LED off, gimbal parks)
@@ -185,6 +186,25 @@ fn run(mut args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "alias" => return cmd_alias(&o, &rest),
+        // Global: whether tiny-remote shows desktop notifications.
+        "notify" => {
+            return match rest.first() {
+                None => {
+                    let on = config::notifications_enabled();
+                    if o.json {
+                        println!("{{\"notifications\":{on}}}");
+                    } else {
+                        println!("{}", if on { "on" } else { "off" });
+                    }
+                    Ok(())
+                }
+                Some(_) => {
+                    let on = need_on_off(&rest, "notify")?;
+                    let _lock = config::PolicyLock::acquire()?;
+                    config::save_global("notifications", if on { "true" } else { "false" })
+                }
+            };
+        }
         _ => {}
     }
 
@@ -754,7 +774,8 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
              \"auto_wb\":{},\"wb_temp\":{},\"pan_deg\":{:.1},\"tilt_deg\":{:.1},\
              \"zoom\":{},\"auto_exposure\":{},\"auto_sleep_seconds\":{},\"power_policy\":\"{}\",\
              \"desired_tracking\":\"{}\",\"pan_range\":[{:.0},{:.0}],\"tilt_range\":[{:.0},{:.0}],\
-             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{},\"ui\":{},\"image\":{}{}}}",
+             \"track_speed\":{},\"fov\":\"{}\",\"face_ae\":{},\"ui\":{},\"image\":{},\
+             \"notifications\":{}{}}}",
             json_camera(cam),
             s.asleep,
             json_str(s.tracking.label()),
@@ -778,6 +799,7 @@ fn cmd_status(cam: &Cam, dev: &Device, json: bool, raw: bool) -> Result<()> {
             s.face_ae,
             ui_json(&cam.id),
             image_json(dev),
+            config::notifications_enabled(),
             if raw {
                 format!(",\"raw\":\"{}\"", hex(&s.raw))
             } else {

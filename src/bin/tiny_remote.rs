@@ -415,6 +415,11 @@ impl Runner {
 }
 
 fn notify(msg: &str) {
+    // All notifications are opt-in (`tinyctl notify on`); errors still go to
+    // the service log.
+    if !tiny_control::config::notifications_enabled() {
+        return;
+    }
     let _ = Command::new("notify-send")
         .args([
             "-a",

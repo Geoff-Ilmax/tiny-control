@@ -272,7 +272,10 @@ The udev rule (`sudo ./packaging/install-root.sh`, then replug the dongle)
 gives your login session access to it. Check it with
 `systemctl --user status tiny-remote`; `tiny-remote --dry-run --no-grab` in a
 terminal prints the command each button would run instead of running it.
-Tiny 3 limits still apply (no Close-up there; the remote reports it).
+Tiny 3 limits still apply (no Close-up there). Desktop notifications from
+the remote (mode changes, presets, errors) are **off** by default; turn them on
+with `tinyctl notify on` or the bar widget's switch. Errors always go to
+`journalctl --user -u tiny-remote`.
 
 ## Omarchy / Hyprland integration
 

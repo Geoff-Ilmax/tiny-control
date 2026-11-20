@@ -289,6 +289,24 @@ pub fn save_setting(id: &str, key: &str, value: &str) -> Result<()> {
     })
 }
 
+/// Caller holds PolicyLock. Save a setting that applies to every camera
+/// (a key outside any `[camera …]` section).
+pub fn save_global(key: &str, value: &str) -> Result<()> {
+    update(|f| {
+        f.global.insert(key.into(), value.into());
+        Ok(())
+    })
+}
+
+/// Whether tiny-remote may show desktop notifications (`notifications = true`
+/// in the config). Off unless turned on.
+pub fn notifications_enabled() -> bool {
+    ConfigFile::load()
+        .global
+        .get("notifications")
+        .is_some_and(|v| v == "true")
+}
+
 /// Caller holds PolicyLock. Name a camera (or clear its name with `None`).
 pub fn set_alias(id: &str, alias: Option<&str>) -> Result<()> {
     if let Some(a) = alias {
@@ -427,6 +445,15 @@ mod tests {
         assert_eq!(c.track_speed.as_deref(), Some("sport"));
         let c = cfg("fov = huge\ntrack_speed = warp");
         assert_eq!((c.fov, c.track_speed), (None, None));
+    }
+
+    #[test]
+    fn notifications_are_a_global_key() {
+        let f = ConfigFile::parse("notifications = true\n[camera A]\nnotifications = false\n");
+        assert_eq!(
+            f.global.get("notifications").map(String::as_str),
+            Some("true")
+        );
     }
 
     #[test]
