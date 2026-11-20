@@ -24,7 +24,7 @@ is another good Tiny 2 tool.
 |---|---|---|
 | **Multi-camera** | `tinyctl list`, `-c <camera>`, `-c all` | Serial-based identity, aliases, per-camera settings |
 | **Sleep / wake** | `sleep` / `wake` / `toggle` | Real vendor sleep: LED off, gimbal parks |
-| **AI tracking** | `track on\|off\|<mode>` | normal, upper/lower body, close-up, headless, group, hand, whiteboard, desk |
+| **AI tracking** | `track on\|off\|<mode>` | normal, group, hand, whiteboard, desk; upper/lower body, close-up, headless on the Tiny 2 only |
 | **Gimbal** | `pan/tilt/zoom`, `recenter` | Absolute PTZ (range queried per model) + per-camera presets |
 | **White balance** | `wb temp <K>` / `wb auto` | Manual color temperature, quirk-safe |
 | **HDR / FOV / exposure** | `hdr`, `fov`, `exposure` | |
@@ -37,8 +37,8 @@ All share one control protocol; only the USB product ID differs.
 
 | Model | USB ID | Status |
 |---|---|---|
-| OBSBOT Tiny 3 Lite | `3564:ff04` | ✅ **Verified** upstream on real hardware (firmware 0510) |
-| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: every command (tracking speed is not supported on this model) |
+| OBSBOT Tiny 3 Lite | `3564:ff04` | ✅ **Verified** upstream on real hardware (firmware 0510); framing modes treated as unsupported, like the Tiny 3 |
+| OBSBOT Tiny 3 | `3564:ff02` | ✅ **Verified**: every command, except tracking speed and the upper/close/headless/lower framing modes (not supported on this model) |
 | OBSBOT Tiny 2 | `3564:fef8` | ✅ **Verified**: every command |
 | Other OBSBOT (`3564:*`) | | ⚠️ Detected as "unrecognized model", every feature treated as untested |
 

@@ -220,6 +220,37 @@ const TINY3_TINY2_VERIFIED: &[Feature] = &[
     Feature::FaceAe,
 ];
 
+/// Framing sub-modes that the Tiny 3 generation accepts (and even echoes in
+/// status) but does not act on: there they are Auto Zoom options, which only
+/// OBSBOT Center can set. Confirmed visually on a Tiny 3; group, hand,
+/// whiteboard and desk do work. See PROTOCOL.md.
+const TINY3_FRAMING_MODES: [Feature; 4] = [
+    Feature::Tracking(TrackMode::UpperBody),
+    Feature::Tracking(TrackMode::CloseUp),
+    Feature::Tracking(TrackMode::Headless),
+    Feature::Tracking(TrackMode::LowerBody),
+];
+
+const TINY3_UNSUPPORTED: &[Feature] = &[
+    TINY3_FRAMING_MODES[0],
+    TINY3_FRAMING_MODES[1],
+    TINY3_FRAMING_MODES[2],
+    TINY3_FRAMING_MODES[3],
+    // The speed frame is accepted but no status byte follows it and no
+    // visible change was seen (also ignored per obsbot-tiny3-protocol).
+    Feature::TrackSpeed,
+];
+
+/// The Tiny 3 Lite shares the Tiny 3 AI firmware; its framing modes were only
+/// ever confirmed by status echo, which the Tiny 3 also gives while ignoring
+/// them, so treat them the same way.
+const TINY3_LITE_UNSUPPORTED: &[Feature] = &[
+    TINY3_FRAMING_MODES[0],
+    TINY3_FRAMING_MODES[1],
+    TINY3_FRAMING_MODES[2],
+    TINY3_FRAMING_MODES[3],
+];
+
 /// The Tiny 2 also reports tracking speed (status byte 0x24 follows std/sport).
 const TINY2_VERIFIED: &[Feature] = &[
     Feature::Sleep,
@@ -242,7 +273,7 @@ pub static MODELS: &[Model] = &[
         pid: "ff04",
         family: Family::Tiny3,
         verified: TINY3_LITE_VERIFIED,
-        unsupported: &[],
+        unsupported: TINY3_LITE_UNSUPPORTED,
         // From the Tiny 2 lineage notes; never exercised on the Lite.
         track_speed_offset: Some(0x21),
     },
@@ -252,9 +283,7 @@ pub static MODELS: &[Model] = &[
         pid: "ff02",
         family: Family::Tiny3,
         verified: TINY3_TINY2_VERIFIED,
-        // The speed frame is accepted but no status byte follows it and no
-        // visible change was seen: treat as absent on this model.
-        unsupported: &[Feature::TrackSpeed],
+        unsupported: TINY3_UNSUPPORTED,
         track_speed_offset: None,
     },
     Model {
@@ -312,7 +341,7 @@ mod tests {
             assert!(m.is_verified(), "{pid}");
             for f in [
                 Feature::Sleep,
-                Feature::Tracking(TrackMode::UpperBody),
+                Feature::Tracking(TrackMode::Hand),
                 Feature::Gimbal,
                 Feature::WhiteBalance,
                 Feature::Hdr,
@@ -338,7 +367,33 @@ mod tests {
         assert_eq!(not_verified("fef8"), []);
         assert_eq!(
             not_verified("ff02"),
-            [("tracking speed".to_string(), Support::Unsupported)]
+            [
+                "'upper-body' tracking",
+                "'close-up' tracking",
+                "'headless' tracking",
+                "'lower-body' tracking",
+                "tracking speed"
+            ]
+            .map(|f| (f.to_string(), Support::Unsupported))
+        );
+        let t3 = by_pid("ff02");
+        for m in [
+            TrackMode::Normal,
+            TrackMode::Group,
+            TrackMode::Hand,
+            TrackMode::Desk,
+        ] {
+            assert_eq!(t3.support(Feature::Tracking(m)), Support::Verified, "{m:?}");
+        }
+        assert_eq!(
+            t3.require(Feature::Tracking(TrackMode::UpperBody))
+                .unwrap_err()
+                .to_string(),
+            "'upper-body' tracking is not supported on the OBSBOT Tiny 3"
+        );
+        assert_eq!(
+            by_pid("ff04").support(Feature::Tracking(TrackMode::CloseUp)),
+            Support::Unsupported
         );
         assert_eq!(by_pid("fef8").track_speed_offset, Some(0x24));
         assert_eq!(by_pid("ff02").track_speed_offset, None);

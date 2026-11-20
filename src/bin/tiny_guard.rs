@@ -212,7 +212,18 @@ fn reconcile(
         status = dev.status()?;
         eprintln!("tiny-guard: [{id}] restored awake for requested power / active call");
     }
-    if config.tracking != status.tracking {
+    // A saved mode this model cannot do (e.g. a framing mode on a Tiny 3)
+    // must not block reconciling everything else: report once, skip it.
+    let tracking_ok =
+        dev.model().support(Feature::Tracking(config.tracking)) != Support::Unsupported;
+    if !tracking_ok && changed {
+        eprintln!(
+            "tiny-guard: [{id}] warning: saved tracking '{}' is not supported on the {}; leaving tracking alone",
+            config.tracking.label(),
+            dev.model().name
+        );
+    }
+    if tracking_ok && config.tracking != status.tracking {
         dev.set_tracking(config.tracking)?;
         eprintln!(
             "tiny-guard: [{id}] restored tracking {}",
@@ -236,7 +247,7 @@ fn reconcile(
     let actual = dev.status()?;
     if (keep_awake && (actual.asleep || (!st.timer_unsupported && actual.auto_sleep_seconds != 0)))
         || (config.power == "sleep" && !actual.asleep)
-        || actual.tracking != config.tracking
+        || (tracking_ok && actual.tracking != config.tracking)
         || config.hdr.is_some_and(|h| h != actual.hdr)
         || actual.auto_wb != config.auto_wb
         || (!config.auto_wb && actual.wb_temp != config.wb_temp)

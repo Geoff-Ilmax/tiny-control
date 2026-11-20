@@ -22,7 +22,7 @@ Numeric `/dev/videoN` shifts on re-enumeration — never hardcode it.
 | Model | USB ID | Product string | Notes |
 |---|---|---|---|
 | Tiny 3 Lite | `3564:ff04` | `OBSBOT Tiny 3 Lite` | Reference unit for this document |
-| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; every command verified except tracking speed (unsupported) |
+| Tiny 3 | `3564:ff02` | `OBSBOT Tiny 3` | Same node layout and XU; every command verified except tracking speed and the four framing modes (unsupported) |
 | Tiny 2 | `3564:fef8` | `OBSBOT Tiny 2` | Origin of the V3 protocol; every command verified |
 
 Model differences handled in code:
@@ -46,7 +46,12 @@ that matter here:
   options it could not reach over USB. This project sets AI mode through the
   selector-6 TLV `0x16` instead, a different path that repo did not test; the
   Tiny 3 echoes every TLV mode in status bytes `0x18`/`0x1c`, but an echo is
-  not proof of effect — the visible behaviour per mode still needs checking.
+  not proof of effect. **Checked visually on a Tiny 3:** normal, group, hand,
+  whiteboard and desk work through the TLV; upper body, close-up, headless and
+  lower body are echoed but change nothing — consistent with them being Auto
+  Zoom options there. They are marked unsupported on the Tiny 3 (and the Tiny
+  3 Lite, whose earlier "verification" was status echo only). All modes work
+  on the Tiny 2.
 - **FOV**: that repo found no setter. TLV `0x04` works here, confirmed by
   status byte `0x11` and visually.
 - **Gotchas** it reports for the Tiny 3: UVC zoom can drift back or be
