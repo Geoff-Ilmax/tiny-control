@@ -285,3 +285,36 @@ Byte `0x2b` varied 02 / 00 / 01 across these reads (00 with nobody in view) — 
 detection; not decoded. `0x5444` is therefore no longer a suspect for tracking.
 (Possible tinyctl follow-up, outside this research: an unconfirmed tracking change on the Tiny 3
 may just mean nobody is in frame.)
+
+## Replay from Linux — save, recall, delete (2026-11-23, approved by the user)
+
+Tool: `tools/replay.py` (dry run unless `--send`; refuses non-Tiny 3, occupied slots for save, empty
+slots for recall/delete). Its frames were first checked offline against nine of Center's captured
+preset frames (3 × ADD, 3 × name, 2 × DELETE, 1 × recall): **all match byte for byte** over the
+CRC-covered length. (Center's frames carry leftover buffer bytes after the payload; they are outside
+len2/CRC and ignored.) One fix came out of that: Center's box half-width is `25000 // zoom100`
+(rounded down).
+
+tiny-guard and tiny-remote paused throughout; full read-only snapshot before each step
+(status --raw, probe boot, preset list, v4l2 controls, every slot's name/pose/settings).
+
+1. **Save** to empty slot 0, live pose pan −10.50 / tilt 5.10 / zoom 1.21:
+   `0x3944` `00 00 00 00 e6 fb fe 01 00 00 79 00 64 ff 64 ff 00 01 00 01 00 00 00 00`, then
+   `0x3A84` `00 00 00 00 "Replay1"`.
+   → slot list `[1, 0]` (the camera lists presets in save order), slot 0 name `Replay1`, pose
+   read back exactly as sent, settings record unset (`ff…`, as after a plain Center save).
+   Set5 in slot 1 unchanged. **Snapshot diff: status block, power-on pose/settings and every image
+   control identical**; only the preset list changed.
+2. **Recall** slot 0 (`0x39C4` slot + four f32 1.0) after the user turned the camera to
+   pan −65.4 / tilt 8.3: within 1 s the gimbal read pan −10.5 / tilt 5.0 and held there. **Works.**
+3. **Delete** slot 0 (`0x3984` `00 00 00 00`) → slot list `[1]`, Set5 intact; preset list, power-on
+   records and image controls identical to the first snapshot.
+   Only difference: tracking off (status `0x18` 02 → 00, `0x2b` 01 → 03) — the recall stops tracking
+   so the camera holds the preset view (PROTOCOL.md: a recall only moves). tiny-guard restored
+   normal tracking within 2 s of restarting.
+
+**Result: on the Tiny 3, preset save (ADD + name), recall and delete work from Linux with Center's
+exact byte layout, with no side effects on stored settings.** The writes tinyctl would need are the
+ones in the protocol summary above; the Tiny-2 float payload must never be sent to a Tiny 3.
+Not yet replayed from Linux: the settings write (`0x3D84` + `0x1D44` + `0x3E04`) and the power-on
+write (`0x3EC4` + `0x3E44` + `0x1C84`).
