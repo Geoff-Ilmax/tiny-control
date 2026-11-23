@@ -185,7 +185,7 @@ Record: `u32 slot | i16 pan×100 | i16 tilt×100 (raw gimbal sign) | i16 roll=0 
 i16 x0, y0, x1, y1 (box centred on 50, width ≈ 50000/(zoom×100)) | u32 0`.
 
 Still open: the box formula (a third sample), what `0x3444`/`0xADC2` do (white balance?),
-and slot limits (only slot 0 used in these captures; Center showed 3 presets before).
+and slot limits: Center offers exactly 3 slots (0–2) for the Tiny 3; treated as the limit, not tested further. Writes to slot 1 confirmed in capture 5.
 
 ## White balance investigation (point 1), 2026-11-23
 
