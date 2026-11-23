@@ -124,3 +124,23 @@ All receiver 0x04, in this order, within 350 ms:
 
 To verify from Linux after the VM releases the camera: `tinyctl probe boot` should now report the
 power-on pose as pan −70.4, tilt ±34.4, zoom 1.21 (0x3884 replies in floats).
+
+## Verified from Linux after capture 3 (VM stopped, tiny-guard/tiny-remote paused)
+
+- `tinyctl -c 1 probe boot`: power-on pose (0x3884, floats) now pan −70.4, tilt 34.4, zoom 1.21, and
+  0x3E84 power-on settings equal Test4's record. **Center's 0x3EC4 + 0x3E44 write took effect.**
+- `tinyctl preset list`: slot 1 occupied, 2 and 3 empty (matches 0x3D04 → `00`).
+- `tools/v3get.py` (read-only GETs, allowlisted commands only):
+
+| request | reply |
+|---|---|
+| `0x3A44` + `00 00 00 00` (4 bytes, what tinyctl sends) | flags 0x29, malformed (len 46, no payload) |
+| **`0x3A44` + `00 00 00 00 00` (5 bytes)** | **flags 0x29, 24 bytes: Test4's pose, identical to Center's read** |
+| `0x3A44` + `01 …` / `02 …` (empty slots) | flags 0x89 (error) |
+| `0x1D04` + 4 bytes | error 0x89 |
+| **`0x1D04` + 8 bytes (slot, sub-index)** | 39 bytes (zeros) |
+| **`0x1C44` + `00 00 00 00`** | 39 bytes (zeros); tinyctl sends no argument and gets no reply |
+| `0x3CC4` slot 0 | `Test4` |
+
+**Preset positions can be read on the Tiny 3**, with a 5-byte request. This removes the reason
+`preset power-on N` was blocked on the Tiny 3 ("the camera doesn't report where its presets point").
