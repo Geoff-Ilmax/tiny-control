@@ -1,0 +1,4 @@
+# Raw pcaps contain the camera serial (USB string descriptors); never commit them.
+captures/
+vm/.override.yml
+vm/.current
