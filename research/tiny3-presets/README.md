@@ -262,3 +262,16 @@ Center's sequence and layouts, never the Tiny 2 float payload.
 - Live image controls now 46/47/48/49 and WB manual: Center's live preview, i.e. the preset's own
   values, not corruption. Nothing went to 0. Tracking off (Center's live state); `status --raw` bytes
   0x18 and 0x2B changed 02 → 00 with it. tiny-guard restores its configured state on restart.
+
+### After capture 5: tracking will not turn back on
+
+- `tinyctl -c 1 image reset` put contrast/saturation/sharpness/hue back to 50 (OK).
+- `tinyctl -c 1 track normal` is **not confirmed**: status flicks to "hand" for a moment, then stays
+  at category 0 (off). Repeated twice, sampled every 0.5 s for 8 s: always `0x18 = 00`, `0x1c = 00`.
+- Before this session (after the unplug test, with tiny-guard running) `track normal` worked and
+  `status --raw` had `0x18 = 02`, `0x2b = 02`. So the reconnect alone does not cause it; something in
+  the Center session does.
+- Last gimbal-control write in the session was `0x0244 01` (manual control released), so that is not it.
+  No selector-6 tracking TLVs were sent. Live writes Center made while the settings editor was open:
+  `0x39C4` recall slot 1, `0x5444` `[0, 4, 0]` and `[0, 5, 2]` (u32 triples), `0x2182` receiver 0x02
+  `c8 00 00 00 00 32 00 00` / `… 19 …`, `0x2AC2` WB. Prime suspect: `0x5444`.
