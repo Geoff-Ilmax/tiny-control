@@ -275,3 +275,13 @@ Center's sequence and layouts, never the Tiny 2 float payload.
   No selector-6 tracking TLVs were sent. Live writes Center made while the settings editor was open:
   `0x39C4` recall slot 1, `0x5444` `[0, 4, 0]` and `[0, 5, 2]` (u32 triples), `0x2182` receiver 0x02
   `c8 00 00 00 00 32 00 00` / `… 19 …`, `0x2AC2` WB. Prime suspect: `0x5444`.
+
+**Resolved — not a Center side effect.** After the camera was turned to face a person (hands and
+face in view), `status --raw` already read `0x18 = 02` (normal), `0x1c = 00`, `0x2b = 01` before any
+new command: tiny-guard's retry of the saved "normal" intent had succeeded. `track normal` then
+confirmed, stable for 8 s. The Tiny 3 only reports/accepts normal tracking while a subject is in
+view; with an empty scene the status drops to category 0 and tinyctl cannot confirm the change.
+Byte `0x2b` varied 02 / 00 / 01 across these reads (00 with nobody in view) — possibly subject
+detection; not decoded. `0x5444` is therefore no longer a suspect for tracking.
+(Possible tinyctl follow-up, outside this research: an unconfirmed tracking change on the Tiny 3
+may just mean nobody is in frame.)
