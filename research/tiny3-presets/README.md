@@ -393,3 +393,15 @@ the Tiny 2 and the Tiny 3. tinyctl's path is confirmed to work (PROTOCOL.md: rep
 is a valid raw boot-pose write, but it is not Center's command. PROTOCOL.md lists `0x3844` among the
 writes being tested when the Tiny 2 started zeroing contrast/saturation/sharpness — of those writes checked so far (update, recall; add and delete still to come) it
 is now the only one whose command differs from Center's.
+
+## Action 5 — delete Test3 (14:36:54)
+
+Two writes, 21 ms apart:
+1. **`0x3984`** PRESET_DELETE `02 00 00 00` — same as tinyctl.
+2. **`0x3D84`** slot 2 + an "unset" settings record:
+   `fe ff ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 ff ff ff ff ff ff ff ff 00 00 00 00 00 00 00`
+
+**Difference from tinyctl:** tinyctl's `preset_delete` sends only `0x3984`, leaving the slot's old
+settings record behind. Center clears it. (On the Tiny 3, Center's delete of Test4 sent only `0x3984`
+— but Test4 had no settings; whether the Tiny 3 also gets a clearing `0x3D84` when the preset had
+settings is not yet captured.)
