@@ -354,3 +354,8 @@ Differences that remain between tinyctl and Center for a Tiny 2 save:
   linearly onto 1.0–2.0. A stale or mis-scaled pose would be stored as-is.
 - Tilt sign: Center stores GIM_STATE's raw sign (+5.2 here). Whether UVC `tilt_absolute` has the same
   sign on the Tiny 2 is not yet checked.
+
+## Action 2 — rename Preset3 (14:32)
+
+One write: **`0x3A84`** `02 00 00 00 "Test3"` (u32 slot + ASCII, no terminator) — the same command and
+layout as on the Tiny 3. tinyctl has no rename today; this would be it on both models.
