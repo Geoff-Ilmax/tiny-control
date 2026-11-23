@@ -405,3 +405,37 @@ Two writes, 21 ms apart:
 settings record behind. Center clears it. (On the Tiny 3, Center's delete of Test4 sent only `0x3984`
 — but Test4 had no settings; whether the Tiny 3 also gets a clearing `0x3D84` when the preset had
 settings is not yet captured.)
+
+## Restore — Preset2 "As Initial State" again (14:38:22)
+
+Same sequence as action 4: `0x3A44` slot 1 → **`0x3EC4`** with that record → `0x3DC4` slot 1 →
+`0x3E44` with Preset2's settings. Preset3 was deliberately not recreated, so no ADD sample on the Tiny 2.
+
+## Verified from Linux against the backup (tiny-guard paused)
+
+- Preset1 and Preset2: position and settings records **byte-identical** to the backup. Slot 2 empty
+  (error 0x89 on `0x3DC4` / `0x3A44`), as intended.
+- Power-on settings (`0x3E84`) identical. Power-on pose identical except pan's last mantissa bit
+  (`66 66 96 40` → `67 66 96 40`, 4.6999998 → 4.7000003): Center copies the preset's stored float,
+  whereas the old value came from an earlier write that rounded differently.
+- Live image values were Center's preview of Test3 (56/57/58/59) and live tracking was group; nothing
+  zeroed. Restored to the pre-capture live values with `tinyctl image` (hue 50, contrast 87,
+  saturation 50, sharpness 50); tiny-guard put tracking back to desk and WB to auto.
+
+## Tiny 2 summary: Center vs tinyctl
+
+| action | Center | tinyctl today | verdict |
+|---|---|---|---|
+| list / names | `0x3B44` / `0x3B04` | flat selectors `0x0C` / `0x0D` | different read path; both work |
+| read pose | `0x3A44` + u32 slot (4 bytes) → f32 record | via selector `0x0D` entry | different read path |
+| recall | `0x39C4` slot + 4 × f32 1.0 | same | **match** |
+| update | `0x3E04` slot + f32 pan, tilt, 0, zoom, −1000 | same layout and command | **match** (pose source differs, below) |
+| rename | `0x3A84` slot + ASCII | not implemented | — |
+| settings | `0x3D84` record, then `0x3E04` with live pose | not implemented | — |
+| power-on | **`0x3EC4`** slot + f32 record, then `0x3E44` | **`0x3844`** same layout, then `0x3E44` | **different command** |
+| delete | `0x3984` slot, **then `0x3D84` unset record** | `0x3984` only | **tinyctl leaves the old settings behind** |
+| add | not captured | `0x3944` f32 layout | unverified |
+
+Pose source: Center reads pan/tilt from GIM_STATE (i16@10, i16@8, ÷10) and zoom from `0x6804`;
+tinyctl's `current_pose()` reads UVC pan/tilt (known to go stale after vendor moves) and maps
+UVC zoom linearly onto 1.0–2.0.
