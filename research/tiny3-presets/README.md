@@ -229,7 +229,7 @@ Center auto-start now disabled; Center opened by hand. Camera had no presets.
 The user saved the position first, then edited the additional settings: single tracking, medium
 speed, contrast/saturation/sharpness/hue 46/47/48/49, manual WB 4400 K.
 
-1. 13:59:18 `0x3944` ADD **slot 1** (slot 0 was empty — Center did not pick the lowest free slot),
+1. 13:59:18 `0x3944` ADD **slot 1** (chosen by hand in Center to test a non-zero slot — Center lets the user pick the slot),
    then `0x3A84` default name `Preset2`, then `0x3A84` `Set5`.
 2. 13:59:31 opening the settings editor: `0x3DC4` slot 1 (all unset), `0x3A44` slot 1 (pose),
    `0x39C4` PRESET_TRIG slot 1 (recall, `idx` + four f32 1.0 — same as tinyctl).
