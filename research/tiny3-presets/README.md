@@ -206,3 +206,19 @@ Two explanations remain:
 1. One of Center's writes (`0xADC2`, `0x3444`, or the selector-4 file writes) turns auto WB off.
 2. The camera re-initialises when it is re-enumerated (VM attach/detach) and comes back with a
    stored manual-WB setting; tiny-guard normally hides this by re-enabling auto WB.
+
+**Unplug test — no VM, no Windows, no Center.** tiny-guard and tiny-remote paused, auto WB confirmed
+on (1, 4000 K), Tiny 3 physically unplugged and replugged (USB device 6 → 8).
+
+- After replug: **`white_balance_automatic=0`**, temperature 4000, red/blue balance 0.
+  Brightness, contrast, saturation, sharpness 50.
+- Restarting tiny-guard set auto WB back to 1 within seconds.
+
+**Conclusion:** the Tiny 3 powers up with manual white balance (4000 K) and comes back that way on
+every re-enumeration. The change seen after the Center sessions is explained by the VM
+attach/detach alone; tiny-guard was silently correcting it each time. Center's start-up writes
+(`0xADC2`, `0x3444`, selector-4 file paths) are **not needed to explain it** and are not implicated
+in any preset side effect. (Not strictly ruled out that they also touch WB; that would need a
+Windows-only run with Center's autostart disabled, which is no longer needed for the preset work.)
+Open, outside this research: why the camera's power-on WB is manual (camera default, or a value
+persisted earlier).
