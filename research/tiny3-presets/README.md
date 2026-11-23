@@ -69,3 +69,33 @@ Sequence Center sent (receiver 0x04 unless noted):
 **Key result:** the Tiny 3 ADD record is fixed-point i16 (degrees × 100), not tinyctl's
 Tiny-2 layout (u32 slot + five f32 with a −1000 sentinel). Sending tinyctl's payload to a Tiny 3
 would be misread, which fits "the Tiny 3 throws away preset writes".
+
+## Capture 2 — Center "update Test4" (13:33, same setup.pcap)
+
+- 13:33:30 Center re-read the store: `0x3D04` → `00` (only slot 0 occupied) and `0x3CC4` slot 0 →
+  `Test4`. **So the add + rename from capture 1 persisted on the camera.**
+- 13:33:57 save over Test4:
+  - GIM_STATE → i16@8 = 344, i16@10 = −704; zoom read f32 1.21
+  - **`0x3944` PRESET_ADD again, same slot 0** — Center never sends `0x3E04` (PRESET_UPDATE) to a Tiny 3:
+    `00 00 00 00 | 80 e4 | 70 0d | 00 00 | 79 00 | 64 ff 64 ff | 00 01 00 01 | 00 00 00 00`
+  - `0x3A84` slot 0 `Test4` re-sent after the add.
+
+### Tiny 3 preset record (0x3944), two samples
+
+| offset | type | sample 1 | sample 2 | meaning |
+|---|---|---|---|---|
+| 0  | u32 | 0 | 0 | slot, 0-based |
+| 4  | i16 | 5670 | −7040 | pan × 100 (= GIM_STATE i16@10 × 10) |
+| 6  | i16 | −5040 | 3440 | tilt × 100 (= GIM_STATE i16@8 × 10, raw sign) |
+| 8  | i16 | 0 | 0 | roll (always 0) |
+| 10 | u16 | 200 | 121 | zoom × 100 (sample 2 matches live zoom 1.21 exactly; sample 1 had live 1.96) |
+| 12 | i16 ×2 | −75, −75 | −156, −156 | box x0, y0 |
+| 16 | i16 ×2 | 175, 175 | 256, 256 | box x1, y1 |
+| 20 | u32 | 0 | 0 | — |
+
+The box is always centred on 50 with width ≈ 50000 / (zoom × 100)
+(250 × 200 = 50000; 412 × 121 = 49852), so it looks derived from zoom, probably a digital-zoom ROI.
+A writer could compute it, or copy Center's formula once a third sample confirms it.
+
+Also seen (not preset-related): at 13:33:30 Center wrote file paths to XU selector 4
+(`/app/private/mask0.jpg`, `mask1.jpg`, `loop2.mp4`), apparently its resource channel.
