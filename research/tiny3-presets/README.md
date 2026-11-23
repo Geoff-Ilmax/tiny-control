@@ -144,3 +144,45 @@ power-on pose as pan −70.4, tilt ±34.4, zoom 1.21 (0x3884 replies in floats).
 
 **Preset positions can be read on the Tiny 3**, with a 5-byte request. This removes the reason
 `preset power-on N` was blocked on the Tiny 3 ("the camera doesn't report where its presets point").
+
+## Capture 4 — Center "delete Test4" (13:44, delete.pcap)
+
+- Center start-up: `0x3D04` → `00`, `0x3CC4` slot 0 → `Test4`, plus its usual start-up writes
+  `0x3444 06 00 00 00 00` and `0xADC2` (receiver 0x02, flags 0x45, `08 01 12 02 20 01` /
+  `08 01 12 04 08 01 20 01` — looks like protobuf).
+- **Delete = one command: `0x3984` `00 00 00 00`** (u32 slot, 0-based). Nothing else — Center does not
+  touch the power-on pose or settings when a preset is deleted.
+
+Checked from Linux afterwards (tiny-guard paused), compared with a snapshot taken just before:
+
+- `0x3D04`, `0x3A44` slot 0, `0x3CC4` slot 0 now all return error 0x89/0x09; `tinyctl preset list`
+  shows every slot empty. **Delete took effect.**
+- Power-on pose and settings unchanged (still Test4's: −70.4 / 34.4 / 1.21).
+- `status --raw` identical. Brightness, contrast, saturation, sharpness unchanged (all 50).
+  **No sign of the Tiny 2 side effect** (zeroed contrast/saturation/sharpness).
+- One change: `white_balance_automatic` 1 → 0 (temperature 4000). No standard UVC WB write appears in
+  either capture, so a Center vendor write did it — likely at start-up, since it also happened in the
+  first session and tiny-guard silently restored it. Restarting tiny-guard set it back to 1 within
+  seconds. Suspects: `0x3444` or `0xADC2`. Worth a dedicated check before tinyctl replays anything.
+
+## Summary: Tiny 3 preset protocol (receiver 0x04, V3 selector 2)
+
+| action | command | payload |
+|---|---|---|
+| list occupied slots | GET `0x3D04` | – → list of u8 slot ids |
+| read name | GET `0x3CC4` | u32 slot → ASCII |
+| **read position** | GET `0x3A44` | **u32 slot + u8 0 (5 bytes)** → 24-byte record |
+| read settings | GET `0x3DC4` | u32 slot → 40-byte record |
+| read OPA | GET `0x1D04` | u32 slot + u32 sub-index (0, 1) → 39 bytes |
+| **save / overwrite** | SET `0x3944` | 24-byte record (below); `0x3E04` is not used |
+| set name | SET `0x3A84` | u32 slot + ASCII (sent after every save) |
+| **delete** | SET `0x3984` | u32 slot |
+| power-on pose | SET `0x3EC4` | 24-byte record (box/trailer differ: see capture 3) |
+| power-on settings | SET `0x3E44` | 40-byte settings record copied from the preset |
+| power-on OPA | SET `0x1C84` | u32 sub-index + 36 bytes copied from 0x1D04 |
+
+Record: `u32 slot | i16 pan×100 | i16 tilt×100 (raw gimbal sign) | i16 roll=0 | u16 zoom×100 |
+i16 x0, y0, x1, y1 (box centred on 50, width ≈ 50000/(zoom×100)) | u32 0`.
+
+Still open: the box formula (a third sample), what `0x3444`/`0xADC2` do (white balance?),
+and slot limits (only slot 0 used in these captures; Center showed 3 presets before).
