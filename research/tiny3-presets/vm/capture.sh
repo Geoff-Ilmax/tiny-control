@@ -7,8 +7,9 @@
 # start through Omarchy's Windows launcher recreates the container from the
 # untouched compose, without the camera.
 #
-#   capture.sh start NAME   pause tiny-guard/tiny-remote, start the VM, record to NAME.pcap
-#   capture.sh stop         stop the VM, copy the pcap here, restart the services
+#   capture.sh start NAME [CAMERA]   pause tiny-guard/tiny-remote, start the VM, record to NAME.pcap
+#                                    CAMERA: tiny3 (default, 3564:ff02) or tiny2 (3564:fef8)
+#   capture.sh stop                  stop the VM, copy the pcap here, restart the services
 set -euo pipefail
 
 BASE=/var/lib/omarchy/windows/docker-compose.yml
@@ -17,7 +18,7 @@ HOST_SHARED=/var/lib/omarchy/windows/mounts/users/1000/shared
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="$HERE/../captures"
 OVERRIDE="$HERE/.override.yml"
-VIDPID=3564:ff02
+VIDPID=
 
 dc() { docker compose -p windows --project-directory "$PROJECT_DIR" -f "$BASE" -f "$OVERRIDE" "$@"; }
 
@@ -25,10 +26,16 @@ case "${1:-}" in
 start)
   name=${2:?usage: capture.sh start NAME}
   [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || { echo "NAME: letters, digits, - and _ only" >&2; exit 1; }
-  line=$(lsusb -d "$VIDPID") || { echo "Tiny 3 ($VIDPID) not found" >&2; exit 1; }
+  case "${3:-tiny3}" in
+    tiny3) VIDPID=3564:ff02 ;;
+    tiny2) VIDPID=3564:fef8 ;;
+    *) echo "CAMERA: tiny3 or tiny2" >&2; exit 1 ;;
+  esac
+  [[ $(lsusb -d "$VIDPID" | wc -l) -eq 1 ]] || { echo "need exactly one camera $VIDPID attached" >&2; exit 1; }
+  line=$(lsusb -d "$VIDPID")
   bus=$(awk '{print $2}' <<<"$line"); dev=$(awk '{sub(":","",$4); print $4}' <<<"$line")
   node=/dev/bus/usb/$bus/$dev
-  echo "Tiny 3 at $node"
+  echo "Camera $VIDPID at $node"
   systemctl --user stop tiny-guard.service tiny-remote.service
   # Only the Tiny 3's own node goes into the container, not the whole USB bus.
   cat >"$OVERRIDE" <<EOF
@@ -41,7 +48,7 @@ services:
 EOF
   echo "$name" >"$HERE/.current"
   dc up -d
-  echo "VM starting with the Tiny 3 attached. Open http://127.0.0.1:8006 or RDP to 127.0.0.1."
+  echo "VM starting with camera $VIDPID attached. Open http://127.0.0.1:8006 or RDP to 127.0.0.1."
   ;;
 stop)
   name=$(cat "$HERE/.current" 2>/dev/null || true)
