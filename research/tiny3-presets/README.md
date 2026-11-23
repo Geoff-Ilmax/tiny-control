@@ -186,3 +186,23 @@ i16 x0, y0, x1, y1 (box centred on 50, width ≈ 50000/(zoom×100)) | u32 0`.
 
 Still open: the box formula (a third sample), what `0x3444`/`0xADC2` do (white balance?),
 and slot limits (only slot 0 used in these captures; Center showed 3 presets before).
+
+## White balance investigation (point 1), 2026-11-23
+
+**Run A — Center start-up, untouched** (`wb-center-startup.pcap`; Center auto-starts at Windows login).
+
+- Before: tiny-guard running → `white_balance_automatic=1`, 4000 K. Pausing tiny-guard/tiny-remote: still 1.
+- After stopping the VM (guard still paused): **`white_balance_automatic=0`**, 4000 K, red 141, blue 162.
+  Brightness, contrast, saturation, sharpness unchanged (50). So Center's start-up alone reproduces it.
+- Every host→camera write in the run:
+  - Windows: `SET_CONFIGURATION` ×2, `SET_INTERFACE` on if 3, and CDC `0x20`/`0x22` on if 4
+    (the camera exposes a CDC serial interface). **No standard UVC control writes at all.**
+  - Center (from 13:50:42, 16 s after the first packet): selector-2 GETs, file paths on selector 4
+    (`/app/private/mask0.jpg`, `mask1.jpg`, `loop2.mp4`), and only three V3 SETs:
+    `0xADC2` (receiver 0x02) `08 01 12 02 20 01`, `0x3444` (receiver 0x04) `06 00 00 00 00`,
+    `0xADC2` `08 01 12 04 08 01 20 01`.
+
+Two explanations remain:
+1. One of Center's writes (`0xADC2`, `0x3444`, or the selector-4 file writes) turns auto WB off.
+2. The camera re-initialises when it is re-enumerated (VM attach/detach) and comes back with a
+   stored manual-WB setting; tiny-guard normally hides this by re-enabling auto WB.
