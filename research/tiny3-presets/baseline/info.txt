@@ -1,0 +1,6 @@
+model  : OBSBOT Tiny 3
+serial : <serial redacted>
+uuid   : <redacted>
+alias  : -
+usb    : 1-4.4 (3564:ff02)
+node   : /dev/video2

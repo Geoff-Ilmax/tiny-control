@@ -1,0 +1,28 @@
+probe boot on the OBSBOT Tiny 3 (read-only):
+  AI_GET_GIM_BOOT_POS 0x3884: 38 bytes
+    01 00 00 00 00 5c 8f 92 c0 67 66 46 c0 00 00 00 00 e2 7a d4 3f 00 00 00 3f 00 00 00 3f 84 37 1a 3f 00 00 80 3f 00
+  AI_GET_BOOT_PRESETS_ACTIONS 0x3E84: 40 bytes
+    ff 05 01 00 00 00 01 00 0c 32 00 01 00 00 a0 0f 01 00 00 02 24 25 26 27 00 00 00 8d 00 a2 00 18 10 02 07 ff ff ff ff ff
+  AI_GET_INITIAL_POSITION_OPA 0x1C44: no reply from camera for AI_GET_INITIAL_POSITION_OPA 0x1C44
+  CAM_GET_BOOT_STATE 0x0382: no reply from camera for CAM_GET_BOOT_STATE 0x0382
+  AI_GET_PRESETS_ACTIONS 0x3DC4 slot 1: 40 bytes
+    0b 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+  AI_GET_PRESET_OPA 0x1D04 slot 1: no reply from camera for AI_GET_PRESET_OPA 0x1D04 slot 1
+  AI_GET_PRESETS_ACTIONS 0x3DC4 slot 2: 40 bytes
+    0c 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+  AI_GET_PRESET_OPA 0x1D04 slot 2: no reply from camera for AI_GET_PRESET_OPA 0x1D04 slot 2
+  AI_GET_PRESETS_ACTIONS 0x3DC4 slot 3: 40 bytes
+    ff 05 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 00 00 00 00 ff ff ff ff 00 01 ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+  AI_GET_PRESET_OPA 0x1D04 slot 3: no reply from camera for AI_GET_PRESET_OPA 0x1D04 slot 3
+  AI_GET_GIMBAL_PRESET_LIST 0x3B44: no reply from camera for AI_GET_GIMBAL_PRESET_LIST
+  AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 1: no reply from camera for AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 1
+  AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 1: no reply from camera for AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 1
+  AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 2: no reply from camera for AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 2
+  AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 2: no reply from camera for AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 2
+  AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 3: no reply from camera for AI_GET_GIMBAL_PRESET_ID_VALUE 0x3A44 slot 3
+  AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 3: no reply from camera for AI_GET_GIMBAL_PRESET_ID_NAME 0x3B04 slot 3
+  XU selector 0x0C (raw preset list, GET only): 60 bytes
+    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  AI_GET_PRESETS_ACTIONS 0x3DC4 (no slot): no reply from camera for AI_GET_PRESETS_ACTIONS
+  preset entries: no reply from camera for on-camera preset list
+  current: tracking normal, awake
