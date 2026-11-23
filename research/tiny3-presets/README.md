@@ -99,3 +99,28 @@ A writer could compute it, or copy Center's formula once a third sample confirms
 
 Also seen (not preset-related): at 13:33:30 Center wrote file paths to XU selector 4
 (`/app/private/mask0.jpg`, `mask1.jpg`, `loop2.mp4`), apparently its resource channel.
+
+## Capture 3 — Center "As Initial State" on Test4 (13:37:39, same setup.pcap)
+
+All receiver 0x04, in this order, within 350 ms:
+
+1. **`0x3A44` GET preset position**, request `00 00 00 00 00` (u32 slot **+ one extra 0 byte**, 5 bytes).
+   Reply (24 bytes, same layout as the 0x3944 record):
+   `00 00 00 00 | 80 e4 | 70 0d | 00 00 | 79 00 | 08 00 08 00 | 5b 00 5b 00 | 64 00 00 00`
+   = slot 0, pan −70.40, tilt 34.40, roll 0, zoom 1.21, box (8, 8, 91, 91), trailer u32 100.
+   **This is the preset-position read we were missing.** `tinyctl probe boot` sends 0x3A44 with a
+   4-byte request and gets no reply; the 5th byte is the likely reason. (Read-only, so it can be tested.)
+   Note the box and trailer differ from what was written (camera recomputes/normalises them).
+2. **`0x3EC4` SET power-on pose** (new command, Tiny 3), same 24-byte i16 layout:
+   `00 00 00 00 | 80 e4 | 6f 0d | 00 00 | 79 00 | 00 00 00 00 | 53 00 53 00 | 00 00 00 00`
+   = slot 0, pan −70.40, tilt 34.39, zoom 1.21, box (0, 0, 83, 83), trailer 0.
+   tinyctl's Tiny-2 path uses `0x3844` with floats instead.
+3. `0x3DC4` GET preset settings slot 0 → 40 bytes, all `ff` except byte 8 = `80` and bytes 16–19 = 0
+   (Test4 has no stored settings), then **`0x3E44` BOOT_ACTIONS_SET with exactly that record** —
+   same as tinyctl does on the Tiny 2.
+4. `0x1D04` GET preset OPA, request **8 bytes** (u32 slot, u32 sub-index 0 / 1) → 39 zero bytes each.
+   tinyctl's probe sends 4 bytes and gets no reply — same pattern as 0x3A44.
+5. `0x1C84` SET initial-position OPA, 40 bytes: u32 sub-index (0, 1) + the 36 zero bytes read in step 4.
+
+To verify from Linux after the VM releases the camera: `tinyctl probe boot` should now report the
+power-on pose as pan −70.4, tilt ±34.4, zoom 1.21 (0x3884 replies in floats).
