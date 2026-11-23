@@ -318,3 +318,39 @@ exact byte layout, with no side effects on stored settings.** The writes tinyctl
 ones in the protocol summary above; the Tiny-2 float payload must never be sent to a Tiny 3.
 Not yet replayed from Linux: the settings write (`0x3D84` + `0x1D44` + `0x3E04`) and the power-on
 write (`0x3EC4` + `0x3E44` + `0x1C84`).
+
+# Tiny 2 cross-check (2026-11-23, tiny2.pcap)
+
+Goal: check tinyctl's existing Tiny 2 preset assumptions against what OBSBOT Center actually sends.
+Backup of all three Tiny 2 presets taken first (kept privately outside the repo). Test slot: Preset3
+(0-based slot 2). Center auto-start disabled; opened by hand.
+
+## Center start-up on the Tiny 2
+
+- Preset list: **`0x3B44` GIMBAL_PRESET_LIST** → `00 01 02`; names: **`0x3B04`** u32 slot → `Preset1…3`.
+  (On the Tiny 3 Center uses `0x3D04` / `0x3CC4` instead; `0x3B44`/`0x3B04` don't answer there.)
+- `0x1AC8` (receiver 0x0D) `touch /app/private/resolution.conf` — Center runs a shell-like command on
+  the camera at start-up.
+
+## Action 1 — recall Preset3, move, update Preset3 (14:28)
+
+1. `0x3A44` u32 slot 2 (**4-byte request on the Tiny 2**, 5 on the Tiny 3) →
+   `02 00 00 00 | f32 −34.9 | f32 −0.9 | f32 0 | f32 1.0 | 00 00 00 00` (floats, matches the backup).
+2. `0x39C4` recall: u32 slot + four f32 1.0 — **identical to tinyctl**.
+3. `0x3DC4` slot 2 → Preset3's settings record (matches the backup).
+4. Save: `0x6604` GIM_STATE (i16@8 = 52, i16@10 = 365), `0x6804` zoom → f32 1.0, then
+   **`0x3E04` PRESET_UPDATE** `02 00 00 00 | 00 00 12 42 (36.5) | 67 66 a6 40 (5.2) | 0 | 00 00 80 3f (1.0) | 00 00 7a c4 (−1000.0)`.
+   No name re-send, no settings write.
+
+**Center uses `0x3E04` to update a Tiny 2 preset, with exactly tinyctl's layout**
+(u32 slot, f32 pan, tilt, roll, zoom, −1000 sentinel). So tinyctl's command and byte layout for
+update are right. The earlier Tiny 2 incident (PROTOCOL.md) therefore did not come from the layout itself.
+
+Differences that remain between tinyctl and Center for a Tiny 2 save:
+
+- **Where the pose comes from.** Center reads the live pose from the camera: pan = GIM_STATE i16@10 / 10,
+  tilt = i16@8 / 10 (raw sign), zoom = `0x6804` f32. tinyctl's `current_pose()` uses the UVC
+  pan/tilt/zoom controls — which tinyctl itself notes go stale after vendor moves — and maps zoom
+  linearly onto 1.0–2.0. A stale or mis-scaled pose would be stored as-is.
+- Tilt sign: Center stores GIM_STATE's raw sign (+5.2 here). Whether UVC `tilt_absolute` has the same
+  sign on the Tiny 2 is not yet checked.
