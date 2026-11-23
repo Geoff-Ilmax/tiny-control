@@ -40,3 +40,32 @@ All on V3 selector 2, receiver 0x04 (AI). Flag 0x21 = GET carrying a u32 argumen
 | `0x3444` | **SET** `06 00 00 00 00` | – | Center writes this at start-up — check for side effects |
 
 Center does not read preset positions at start-up; that must happen on recall/edit.
+
+## Capture 1 — Center "add preset" (13:31, same setup.pcap)
+
+Sequence Center sent (receiver 0x04 unless noted):
+
+1. 13:31:14–18 `0x3984` PRESET_DELETE `00 00 00 00`, `01 …`, `02 …` — **all three existing presets
+   deleted** (2 s apart, i.e. three UI clicks). Delete = u32 slot, 0-based — same as tinyctl.
+2. 13:31:23–26 manual move: `0x0244 00` (enter manual?) … `0x6484` gimbal speed stream … `0x0244 01`.
+   Zoom via `0x1942` (receiver 0x02) `08 00 00 00 <zoom×100 u32>` (0xa6 → 0xc4 = 1.66 → 1.96).
+3. 13:31:36 save:
+   - `0x6604` GIM_STATE read → `3f 00 41 fe 29 f9 00 00 08 fe 37 02 …` (i16@8 = −504, i16@10 = 567)
+   - `0x6804` zoom read → f32 1.96
+   - **`0x3944` PRESET_ADD, 24-byte payload:**
+     ```
+     00 00 00 00   slot u32 (0-based)
+     26 16         i16  5670 = pan  56.70°  (GIM_STATE i16@10 × 10)
+     50 ec         i16 −5040 = tilt −50.40° (GIM_STATE i16@8 × 10, raw sign — tinyctl displays it negated)
+     00 00         i16 0 (roll?)
+     c8 00         u16 200 (zoom? live zoom read 1.96 — check against a second sample)
+     b5 ff b5 ff   i16 −75, −75   unknown
+     af 00 af 00   i16 175, 175   unknown
+     00 00 00 00   u32 0
+     ```
+   - `0x3A84` **set preset name**: u32 slot + ASCII, sent right after ADD with default `Preset1`.
+4. 13:31:55 `0x3A84` `00 00 00 00 "Test4"` — the rename.
+
+**Key result:** the Tiny 3 ADD record is fixed-point i16 (degrees × 100), not tinyctl's
+Tiny-2 layout (u32 slot + five f32 with a −1000 sentinel). Sending tinyctl's payload to a Tiny 3
+would be misread, which fits "the Tiny 3 throws away preset writes".
