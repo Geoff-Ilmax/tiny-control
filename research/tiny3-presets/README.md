@@ -378,3 +378,18 @@ No `0x1D44` OPA writes on the Tiny 2 (the Tiny 3 sends two).
 **Note: Center re-saves the live gimbal pose with the settings.** Group tracking was switched on live
 in the editor, the camera moved to follow, and Center stored that new position (36.5 / 5.2 → 3.6 / 30.3).
 A writer that only wants to change settings should send the preset's stored pose, not the live one.
+
+## Action 4 — Test3 "As Initial State" (14:35:50)
+
+1. `0x3A44` slot 2 → `02 00 00 00 | f32 3.6 | f32 30.3 | 0 | 1.0 | 0`
+2. **`0x3EC4`** with **exactly that 24-byte record** (u32 slot + f32 pan, tilt, roll, zoom + f32 0)
+3. `0x3DC4` slot 2 → `0x3E44` BOOT_ACTIONS_SET with the same 40 bytes (same as tinyctl).
+
+No OPA (`0x1D04`/`0x1C84`) on the Tiny 2.
+
+**Difference from tinyctl:** tinyctl's `preset power-on N` sends **`0x3844` AI_SET_GIM_BOOT_POS**
+(same 24-byte float layout, slot in field 0) — Center never sends `0x3844`; it uses **`0x3EC4`** on both
+the Tiny 2 and the Tiny 3. tinyctl's path is confirmed to work (PROTOCOL.md: replug test), so 0x3844
+is a valid raw boot-pose write, but it is not Center's command. PROTOCOL.md lists `0x3844` among the
+writes being tested when the Tiny 2 started zeroing contrast/saturation/sharpness — of those writes checked so far (update, recall; add and delete still to come) it
+is now the only one whose command differs from Center's.
