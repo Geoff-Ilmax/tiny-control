@@ -46,7 +46,7 @@ Center does not read preset positions at start-up; that must happen on recall/ed
 Sequence Center sent (receiver 0x04 unless noted):
 
 1. 13:31:14–18 `0x3984` PRESET_DELETE `00 00 00 00`, `01 …`, `02 …` — **all three existing presets
-   deleted** (2 s apart, i.e. three UI clicks). Delete = u32 slot, 0-based — same as tinyctl.
+   deleted** (2 s apart; confirmed: the user deleted them by hand in Center, not Center itself). Delete = u32 slot, 0-based — same as tinyctl.
 2. 13:31:23–26 manual move: `0x0244 00` (enter manual?) … `0x6484` gimbal speed stream … `0x0244 01`.
    Zoom via `0x1942` (receiver 0x02) `08 00 00 00 <zoom×100 u32>` (0xa6 → 0xc4 = 1.66 → 1.96).
 3. 13:31:36 save:
