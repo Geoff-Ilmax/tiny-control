@@ -359,3 +359,22 @@ Differences that remain between tinyctl and Center for a Tiny 2 save:
 
 One write: **`0x3A84`** `02 00 00 00 "Test3"` (u32 slot + ASCII, no terminator) — the same command and
 layout as on the Tiny 3. tinyctl has no rename today; this would be it on both models.
+
+## Action 3 — edit Test3's additional settings (14:33–14:34)
+
+Opening the editor: `0x3DC4` slot 2 (record still Preset3's original — so action 1's lone `0x3E04`
+did **not** touch the settings), `0x3A44` slot 2 (pose 36.5 / 5.2 from action 1), `0x39C4` recall.
+While editing, Center applied values live: selector-6 TLV `16 02 01` (tracking → group, the same TLV
+tinyctl uses), `0x0CC4` TRACK_SPEED `00` / `02`, and `0x29C2` / `0x2942` reads (receiver 0x02).
+
+Save, in this order:
+1. **`0x3D84`** u32 slot 2 + 40-byte record
+   `09 01 ff ff ff ff ff ff 80 ff ff ff ff ff ff ff 01 01 00 08 38 39 3a 3b 00 …`
+   (group, motion speed, blur 8, contrast/sat/sharp/hue 56/57/58/59).
+2. `0x6604` GIM_STATE read, then **`0x3E04`** u32 slot 2 + f32 pan **3.6**, tilt **30.3**, 0, zoom 1.0, −1000.
+
+No `0x1D44` OPA writes on the Tiny 2 (the Tiny 3 sends two).
+
+**Note: Center re-saves the live gimbal pose with the settings.** Group tracking was switched on live
+in the editor, the camera moved to follow, and Center stored that new position (36.5 / 5.2 → 3.6 / 30.3).
+A writer that only wants to change settings should send the preset's stored pose, not the live one.
