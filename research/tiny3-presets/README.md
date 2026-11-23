@@ -222,3 +222,43 @@ in any preset side effect. (Not strictly ruled out that they also touch WB; that
 Windows-only run with Center's autostart disabled, which is no longer needed for the preset work.)
 Open, outside this research: why the camera's power-on WB is manual (camera default, or a value
 persisted earlier).
+
+## Capture 5 — preset with "Additional settings" (point 2), settings.pcap, 13:58–14:00
+
+Center auto-start now disabled; Center opened by hand. Camera had no presets.
+The user saved the position first, then edited the additional settings: single tracking, medium
+speed, contrast/saturation/sharpness/hue 46/47/48/49, manual WB 4400 K.
+
+1. 13:59:18 `0x3944` ADD **slot 1** (slot 0 was empty — Center did not pick the lowest free slot),
+   then `0x3A84` default name `Preset2`, then `0x3A84` `Set5`.
+2. 13:59:31 opening the settings editor: `0x3DC4` slot 1 (all unset), `0x3A44` slot 1 (pose),
+   `0x39C4` PRESET_TRIG slot 1 (recall, `idx` + four f32 1.0 — same as tinyctl).
+   While editing, Center applies values live: `0x5444` (tracking), `0x2AC2` receiver 0x02
+   (WB: `ff …`, u32 4000 → 4400 at bytes 4–7), `0x2182` receiver 0x02, and UVC image controls.
+3. **14:00:30 save of the settings, in this order:**
+   - **`0x3D84` AI_SET_PRESETS_ACTIONS**: u32 slot + the 40-byte record
+     `0b 06 ff ff ff ff ff ff 80 ff ff ff ff 05 30 11 00 00 00 00 2e 2f 30 31 00 ff 00 00 00 00 00 18 10 ff…`
+     (single, medium, manual WB 4400, image 46/47/48/49 — matches the PROTOCOL.md table)
+   - `0x1D44` set preset OPA ×2 (44 bytes: u32 slot, then `00 01 00 00 …` / `01 00 00 00 …`)
+   - **`0x3E04` AI_SET_PRESET_UPDATE_ONLY with the i16 pose record**:
+     `01 00 00 00 | c6 e4 | a2 03 | 00 00 | 79 00 | 64 00 64 00 | 2c 01 2c 01 | 00 00 00 00`
+     (same pose and zoom; box written as (100,100,300,300))
+   - `0x3A84` name again, `0x2AC2` WB again.
+
+**So `0x3E04` is used by Center on the Tiny 3**, after `0x3D84`, with the i16 pose layout. The Tiny 2
+damage came from sending it with tinyctl's float layout. A future writer should send exactly
+Center's sequence and layouts, never the Tiny 2 float payload.
+
+### Verified from Linux (tiny-guard paused), compared with a snapshot just before
+
+- `0x3D04` → `01`; `0x3CC4` slot 1 → `Set5`; `tinyctl preset list` shows slot 2 (1-based) only.
+- `0x3DC4` slot 1 returns **exactly the record `0x3D84` wrote**.
+- `0x3A44` slot 1 pose matches; the box reads back as (8, 8, 91, 91) whatever was written
+  ((−156…256) by ADD, (100…300) by UPDATE_ONLY, (0…83) by the power-on write). **The camera
+  recomputes the box from zoom** (centre 50, width ≈ 100/zoom: 83 ≈ 100/1.21), so its written value
+  appears not to matter.
+- `0x1D04` slot 1 sub 0 → first byte `01`, rest 0; sub 1 → all 0.
+- Power-on pose and settings unchanged (editing a preset does not touch the power-on copy).
+- Live image controls now 46/47/48/49 and WB manual: Center's live preview, i.e. the preset's own
+  values, not corruption. Nothing went to 0. Tracking off (Center's live state); `status --raw` bytes
+  0x18 and 0x2B changed 02 → 00 with it. tiny-guard restores its configured state on restart.
